@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+@theme {
+  --font-pixel: "VT323", ui-monospace, monospace;
+
+  --color-ink: #1c1330;
+  --color-ink-soft: #2b2047;
+  --color-paper: #fff4f0;
+  --color-sakura: #f7a8c4;
+  --color-sakura-deep: #e0709a;
+  --color-bamboo: #5fae5b;
+  --color-gold: #f2c14e;
+  --color-miss: #4a3f5c;
+}
+
