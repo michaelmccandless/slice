@@ -76,7 +76,7 @@
   "teapot": { "parts": ["tea","pot"], "clue": "Short and stout." },
   "thunderstorm": { "parts": ["thunder","storm"], "clue": "Lightning's friend." },
   "toothpaste": { "parts": ["tooth","paste"], "clue": "Minty squeeze." },
-  "treehouse": { "parts": ["tree","house"], "clue": "Secret clubhouse." },
+  "treehouse": { "parts": ["tree","house"], "clue": "Backyard hideout." },
   "waterfall": { "parts": ["water","fall"], "clue": "Niagara, for one." },
   "watermelon": { "parts": ["water","melon"], "clue": "Seeds to spit." },
   "windmill": { "parts": ["wind","mill"], "clue": "Don Quixote's foe." },
