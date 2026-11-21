@@ -1,0 +1,16 @@
+{
+  "sunflower":  { "parts": ["sun", "flower"],    "clue": "Looks east." },
+  "carpet":     { "parts": ["car", "pet"],       "clue": "Underfoot indoors." },
+  "pantry":     { "parts": ["pan", "try"],       "clue": "Where the snacks hide." },
+  "cartoon":    { "parts": ["car", "toon"],      "clue": "Saturday morning staple." },
+  "basketball": { "parts": ["basket", "ball"],   "clue": "Nothing but net." },
+  "firefly":    { "parts": ["fire", "fly"],      "clue": "Glows after dark." },
+  "moonlight":  { "parts": ["moon", "light"],    "clue": "Night shine." },
+  "rainbow":    { "parts": ["rain", "bow"],      "clue": "Appears after the storm." },
+  "starfish":   { "parts": ["star", "fish"],     "clue": "Five arms, no brain." },
+  "notebook":   { "parts": ["note", "book"],     "clue": "Scribbles live here." },
+  "pancake":    { "parts": ["pan", "cake"],      "clue": "Breakfast stack." },
+  "seahorse":   { "parts": ["sea", "horse"],     "clue": "Dad carries the babies." },
+  "cupcake":    { "parts": ["cup", "cake"],      "clue": "Single-serving sweet." },
+  "toothbrush": { "parts": ["tooth", "brush"],   "clue": "Twice a day." }
+}

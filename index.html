@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SLICE - a daily word game</title>
+    <meta name="description" content="SLICE: cut the hidden word into its parts. A daily word-deduction game.">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+
+    <!-- Tailwind build output (adjust to wherever your build writes it) -->
+    <link rel="stylesheet" href="src/css/style.css">
+</head>
+
+<body class="min-h-screen overflow-x-hidden font-pixel text-paper">
+
+    <!-- ============ Pixel scenery (decorative) ============ -->
+    <div class="scenery" aria-hidden="true">
+        <div class="sky"></div>
+        <div class="moon"></div>
+
+        <div id="bamboo-far" class="bamboo-layer"></div>
+        <div id="bamboo-mid" class="bamboo-layer"></div>
+
+        <!-- Cherry tree sprite -->
+        <svg width="0" height="0" class="absolute">
+            <defs>
+                <symbol id="cherry" viewBox="0 0 48 64" shape-rendering="crispEdges">
+                    <rect x="22" y="30" width="6" height="34" fill="#5a3a2e" />
+                    <rect x="20" y="52" width="2" height="12" fill="#5a3a2e" />
+                    <rect x="28" y="56" width="2" height="8" fill="#3f281f" />
+                    <rect x="14" y="26" width="10" height="4" fill="#5a3a2e" />
+                    <rect x="26" y="22" width="10" height="4" fill="#5a3a2e" />
+                    <rect x="10" y="22" width="4" height="8" fill="#5a3a2e" />
+                    <rect x="34" y="16" width="4" height="8" fill="#5a3a2e" />
+                    <rect x="4" y="14" width="16" height="12" fill="#e0709a" />
+                    <rect x="14" y="6" width="20" height="14" fill="#e0709a" />
+                    <rect x="30" y="12" width="16" height="12" fill="#e0709a" />
+                    <rect x="22" y="20" width="14" height="8" fill="#e0709a" />
+                    <rect x="4" y="12" width="16" height="10" fill="#f7a8c4" />
+                    <rect x="14" y="4" width="20" height="12" fill="#f7a8c4" />
+                    <rect x="30" y="10" width="16" height="10" fill="#f7a8c4" />
+                    <rect x="22" y="18" width="14" height="6" fill="#f7a8c4" />
+                    <rect x="8" y="12" width="4" height="4" fill="#ffd9e6" />
+                    <rect x="20" y="4" width="6" height="4" fill="#ffd9e6" />
+                    <rect x="36" y="10" width="4" height="4" fill="#ffd9e6" />
+                    <rect x="26" y="18" width="4" height="2" fill="#ffd9e6" />
+                </symbol>
+            </defs>
+        </svg>
+        <svg class="tree-left tree" viewBox="0 0 48 64">
+            <use href="#cherry" />
+        </svg>
+        <svg class="tree-right tree" viewBox="0 0 48 64">
+            <use href="#cherry" />
+        </svg>
+
+        <div id="bamboo-near" class="bamboo-layer"></div>
+        <div class="ground"></div>
+        <div class="scrim"></div>
+        <div id="petals"></div>
+        <div id="motes"></div>
+        <div class="scanlines"></div>
+    </div>
+
+    <!-- ============ Page ============ -->
+    <main class="z-10 relative flex flex-col items-center mx-auto px-4 py-6 w-full max-w-lg min-h-screen">
+
+        <header class="mb-4 text-center">
+            <h1 class="text-6xl sm:text-7xl leading-none title-pixel">SLICE</h1>
+            <p class="mt-2 text-sakura text-xl tracking-wide">Cut the word. Find the parts.</p>
+            <p id="puzzle-no" class="text-paper/60 text-lg tracking-wide">&nbsp;</p>
+        </header>
+
+        <!-- Game panel -->
+        <section class="p-4 sm:p-5 w-full pixel-panel" aria-label="SLICE game">
+
+            <!-- Clue slots: one per subword -->
+            <div id="slots" class="flex flex-wrap justify-center gap-2 mb-3" aria-live="polite"></div>
+
+            <!-- Extra hint from games.json (second clue press) -->
+            <p id="hint" class="hidden mb-3 text-gold text-lg text-center tracking-wide"></p>
+
+            <!-- Guess grid -->
+            <div id="grid" class="flex flex-col gap-1.5 mb-2"></div>
+
+            <!-- Status message -->
+            <p id="message" class="mb-2 min-h-6 text-xl text-center tracking-wide" role="status"></p>
+
+            <!-- Input -->
+            <form id="guess-form" class="flex gap-2" autocomplete="off">
+                <input id="guess" type="text" maxlength="14" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Your guess" placeholder="TYPE A WORD" class="flex-1 px-3 py-1.5 min-w-0 text-2xl uppercase tracking-wider pixel-input">
+                <button id="submit" type="submit" class="px-5 py-1.5 text-2xl pixel-btn pixel-btn-primary">SLICE</button>
+            </form>
+
+            <!-- Clue / next word -->
+            <div class="flex justify-center items-center gap-3 mt-3">
+                <button id="btn-clue" type="button" class="px-4 py-0.5 text-xl pixel-btn">CLUE 1/3</button>
+                <button id="btn-next" type="button" class="hidden px-4 py-0.5 text-xl pixel-btn pixel-btn-primary">NEXT WORD</button>
+            </div>
+        </section>
+
+        <!-- Mode buttons -->
+        <nav class="flex justify-center gap-3 mt-4 w-full" aria-label="Game modes">
+            <button type="button" id="btn-daily" class="flex-1 px-3 py-1 sm:max-w-40 text-2xl pixel-btn" aria-pressed="true">DAILY</button>
+            <button type="button" id="btn-unlimited" class="flex-1 px-3 py-1 sm:max-w-40 text-2xl pixel-btn" aria-pressed="false">UNLIMITED</button>
+            <button type="button" id="btn-archive" class="flex-1 px-3 py-1 sm:max-w-40 text-2xl pixel-btn" aria-pressed="false">ARCHIVE</button>
+        </nav>
+
+        <!-- How to play -->
+        <details class="mt-4 px-4 py-2 w-full text-lg pixel-panel">
+            <summary class="text-sakura text-xl tracking-wide cursor-pointer select-none">HOW TO PLAY</summary>
+            <ul class="space-y-1.5 mt-2 text-paper/85 list-none">
+                <li>&gt; The hidden word is built from the clue slots, in order.</li>
+                <li>&gt; You get <b class="text-gold">4 guesses</b>. A guess can be any length.</li>
+                <li>&gt; <span class="legend legend-green">GREEN</span> your guess contains a part in the same spot (same distance from the left or right end).</li>
+                <li>&gt; <span class="legend legend-yellow">YELLOW</span> your guess contains a part, but in the wrong spot.</li>
+                <li>&gt; Stuck? <b class="text-sakura">CLUE</b> shows letter counts, then a hint, then (if you're sure) the word.</li>
+                <li>&gt; <b class="text-sakura">UNLIMITED</b> gives you a fresh random word every round.</li>
+            </ul>
+        </details>
+
+        <footer class="mt-auto pt-6 text-paper/50 text-base">SLICE &copy; 2026</footer>
+    </main>
+
+    <script src="src/js/home.js" defer></script>
+</body>
+
+</html>
