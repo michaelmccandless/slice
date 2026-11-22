@@ -15,87 +15,130 @@
     <link rel="stylesheet" href="src/css/style.css">
 </head>
 
-<body class="min-h-screen overflow-x-hidden font-pixel text-text">
+<body class="font-pixel text-text">
 
-    <!-- ============ Scenery (all layers are filled in by home.js) ============ -->
+    <!-- ============ Scenery: a bamboo forest at midday (layers are filled in by home.js) ============ -->
     <div class="scenery" aria-hidden="true">
-        <div class="sky"></div>
-        <div class="moon"></div>
-        <div id="stars"></div>
-        <div id="L-mount" class="layer"></div>
-        <div id="L-far" class="layer"></div>
-        <div id="bamboo-far" class="bamboo-layer"></div>
-        <div id="L-water" class="layer"></div>
-        <div id="bamboo-mid" class="bamboo-layer"></div>
-        <div id="L-trees" class="layer"></div>
-        <div id="L-front" class="layer"></div>
-        <div id="bamboo-near" class="bamboo-layer"></div>
-        <div id="L-ground" class="layer"></div>
+        <div class="floor"></div>
+        <div id="L-back" class="layer" data-depth="4"></div>
+        <div id="L-shaft" class="layer" data-depth="8"></div>
+        <div id="L-mid" class="layer" data-depth="12"></div>
+        <div id="L-water" class="layer" data-depth="16"></div>
+        <div id="L-trees" class="layer" data-depth="20"></div>
+        <div id="L-near" class="layer" data-depth="28"></div>
+        <div id="L-fore" class="layer" data-depth="34"></div>
+        <div id="L-canopy" class="layer" data-depth="22"></div>
         <div class="scrim"></div>
-        <div id="petals"></div>
-        <div id="motes"></div>
+        <div id="petals" class="layer" data-depth="26"></div>
+        <div id="motes" class="layer" data-depth="30"></div>
         <div class="scanlines"></div>
     </div>
 
-    <!-- ============ Page ============ -->
-    <main class="z-10 relative flex flex-col mx-auto px-3 py-4 w-full max-w-md min-h-screen">
+    <!-- darker, blurred strip of the background behind the game -->
+    <div class="band" aria-hidden="true"></div>
 
-        <header class="flex justify-between items-end mb-3 px-1">
-            <h1 class="leading-none logo">SLICE</h1>
-            <p id="puzzle-no" class="chip">&nbsp;</p>
+    <!-- ============ Page ============ -->
+    <main id="app" class="page">
+
+        <header class="top">
+            <h1 class="logo">SLICE</h1>
+            <div class="chips">
+                <span id="streak-chip" class="chip" title="Consecutive daily wins">STREAK 0</span>
+                <span id="puzzle-no" class="chip">&nbsp;</span>
+                <button id="btn-sfx" type="button" class="chip chip-btn" aria-pressed="true" title="Sound effects">SFX ON</button>
+            </div>
         </header>
 
-        <!-- Game panel -->
-        <section class="p-3 w-full glass" aria-label="SLICE game">
-
-            <!-- Clue slots: one slim chip per subword -->
-            <div id="slots" class="flex flex-wrap justify-center gap-1.5 mb-1.5" aria-live="polite"></div>
-
-            <!-- Hint: space is always reserved so nothing shifts when it fades in -->
+        <!-- ===== Game ===== -->
+        <section id="view-game" aria-label="SLICE game">
+            <div id="slots" class="slots" aria-live="polite"></div>
             <p id="hint" class="hint" aria-live="polite"></p>
 
-            <!-- Guess list -->
-            <div id="grid" class="flex flex-col gap-1.5 mb-1.5"></div>
-
-            <!-- Status message -->
+            <div id="grid" class="grid"></div>
             <p id="message" class="msg" role="status"></p>
 
-            <!-- Input -->
-            <form id="guess-form" class="flex gap-1.5" autocomplete="off">
-                <input id="guess" type="text" maxlength="14" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Your guess" placeholder="Type a word" class="flex-1 px-3 py-1 min-w-0 text-2xl uppercase tracking-wider field">
-                <button id="submit" type="submit" class="px-4 text-2xl btn btn-primary">SLICE</button>
+            <form id="guess-form" class="entry" autocomplete="off">
+                <input id="guess" type="text" maxlength="14" spellcheck="false" autocapitalize="off" autocorrect="off" aria-label="Your guess" placeholder="type a word" class="field">
+                <button id="submit" type="submit" class="btn btn-primary">SLICE</button>
             </form>
 
-            <!-- Clue / next word -->
-            <div class="flex justify-center items-center gap-2 mt-2">
-                <button id="btn-clue" type="button" class="px-3 py-0.5 text-lg btn">CLUE 1/3</button>
-                <button id="btn-next" type="button" class="hidden px-3 py-0.5 text-lg btn btn-primary">NEXT WORD</button>
+            <div class="actions">
+                <button id="btn-clue" type="button" class="btn btn-sm">CLUE 1/3</button>
+                <button id="btn-next" type="button" class="hidden btn btn-sm btn-primary">NEXT WORD</button>
+                <button id="btn-results" type="button" class="hidden btn btn-sm btn-primary">RESULTS</button>
             </div>
         </section>
 
+        <!-- ===== Results (replaces the game when a daily / archive round ends) ===== -->
+        <section id="view-results" class="hidden" aria-label="Results">
+            <p id="res-kicker" class="kicker">DAILY #1</p>
+            <h2 id="res-title" class="res-title">SLICED!</h2>
+            <p id="res-word" class="res-word"></p>
+
+            <div class="stats">
+                <div class="stat"><b id="stat-played">0</b><span>PLAYED</span></div>
+                <div class="stat"><b id="stat-win">0</b><span>WIN %</span></div>
+                <div class="stat"><b id="stat-streak">0</b><span>STREAK</span></div>
+                <div class="stat"><b id="stat-best">0</b><span>BEST</span></div>
+            </div>
+
+            <p class="sub">GUESS DISTRIBUTION</p>
+            <div id="dist" class="dist"></div>
+
+            <pre id="share-preview" class="share"></pre>
+            <div class="actions">
+                <button id="btn-copy" type="button" class="btn btn-primary">COPY RESULT</button>
+                <button id="btn-share" type="button" class="hidden btn">SHARE</button>
+            </div>
+
+            <p id="next-in" class="next-in"></p>
+
+            <div class="actions">
+                <button id="btn-board" type="button" class="btn btn-sm">VIEW BOARD</button>
+                <button id="btn-res-zen" type="button" class="btn btn-sm">ZEN MODE</button>
+                <button id="btn-res-archive" type="button" class="btn btn-sm">ARCHIVE</button>
+            </div>
+        </section>
+
+        <!-- ===== Archive ===== -->
+        <section id="view-archive" class="hidden" aria-label="Archive">
+            <div class="arch-head">
+                <h2 class="res-title sm">ARCHIVE</h2>
+                <span id="arch-count" class="chip">0 SOLVED</span>
+            </div>
+            <div id="arch-list" class="arch-list"></div>
+            <p class="arch-note">Archive puzzles don't affect your daily streak.</p>
+            <div class="actions"><button id="arch-back" type="button" class="btn btn-sm">BACK</button></div>
+        </section>
+
         <!-- Modes -->
-        <nav class="mt-3 seg" aria-label="Game modes">
+        <nav class="seg" aria-label="Game modes">
             <button type="button" id="btn-daily" aria-pressed="true">DAILY</button>
             <button type="button" id="btn-zen" aria-pressed="false">ZEN MODE</button>
             <button type="button" id="btn-archive" aria-pressed="false">ARCHIVE</button>
         </nav>
 
-        <!-- How to play -->
-        <details class="mt-3 px-3 py-1.5 text-lg glass">
-            <summary class="text-sakura text-xl tracking-wide cursor-pointer select-none">HOW TO PLAY</summary>
-            <ul class="space-y-1 mt-1.5 text-text/80 list-none">
-                <li>&gt; The hidden word is built from the clue chips, in order.</li>
-                <li>&gt; You get <b class="text-gold">4 guesses</b>. A guess can be any length.</li>
+        <details class="howto">
+            <summary>HOW TO PLAY</summary>
+            <ul>
+                <li>&gt; The hidden word is built from the clue boxes, in order.</li>
+                <li>&gt; You get <b>4 guesses</b>. A guess can be any length.</li>
                 <li>&gt; <span class="legend legend-green">GREEN</span> a part is in your guess, in the same spot (same distance from the left or right end).</li>
                 <li>&gt; <span class="legend legend-yellow">YELLOW</span> a part is in your guess, but in the wrong spot.</li>
-                <li>&gt; Guesses containing a part get <b class="text-sakura">sliced</b> between the parts.</li>
-                <li>&gt; Stuck? <b class="text-sakura">CLUE</b> shows letter counts, then a hint, then the word.</li>
-                <li>&gt; <b class="text-sakura">ZEN MODE</b>: no daily limit. Relax and play forever.</li>
+                <li>&gt; Guesses containing a part get <b>sliced</b> around it. No part, no slice.</li>
+                <li>&gt; <b>CLUE</b> shows letter counts, then a hint, then the word.</li>
+                <li>&gt; <b>DAILY</b> is one word a day and builds your streak. <b>ARCHIVE</b> replays past days. <b>ZEN</b> never ends.</li>
             </ul>
         </details>
 
-        <footer class="mt-auto pt-4 text-muted text-base text-center">SLICE &copy; 2026</footer>
+        <footer class="foot">SLICE &copy; 2026</footer>
     </main>
+
+    <!-- The old tea-sipping sage in the corner (sprite + quotes are filled in by home.js) -->
+    <div id="sage" class="sage" aria-hidden="true">
+        <div id="sage-quote" class="sage-quote"></div>
+        <div id="sage-body" class="sage-body"></div>
+    </div>
 
     <script src="src/js/home.js" defer></script>
 </body>

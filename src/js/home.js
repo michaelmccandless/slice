@@ -1,13 +1,21 @@
 /* =========================================================
    SLICE - src/js/home.js
-   Modes: Daily (one word per date) and Zen (endless random words).
-   Archive is still a placeholder.
-   The file is laid out in sections; boot() is at the very bottom.
+   Modes:  Daily   one word per date (builds your streak)
+           Archive replay any past day (no streak)
+           Zen     endless random words
+   Layout: core logic -> sound -> sage quotes -> UI -> slash ->
+           game flow -> views (results / archive) -> persistence
+           -> scenery sprites -> scene + sage sprite -> boot()
    ========================================================= */
 
 const DATA_DIR = 'src/data/';
 const MAX_GUESSES = 4;
-const LAUNCH_DAY = Date.UTC(2026, 10, 21) / 86400000; // daily #1 = Nov 21, 2026
+const FIRST_DAY = Date.UTC(2026, 10, 20) / 86400000;   // puzzle #1 = Nov 20, 2026
+const KEY = {
+  stats: 'slice:v2:stats',
+  puzzle: (n) => `slice:v2:p:${n}`,
+  sfx: 'slice:v2:sfx',
+};
 
 // Clue button: 0 -> letter counts, 1 -> hint, 2 -> reveal the word
 const CLUE_LABELS = ['CLUE 1/3', 'HINT 2/3', 'REVEAL 3/3'];
@@ -18,20 +26,24 @@ const CLUE_TITLES = [
 ];
 
 const state = {
-  mode: 'daily',   // 'daily' | 'zen'
+  mode: 'daily',    // 'daily' | 'archive' | 'zen'
+  view: 'game',     // 'game' | 'results' | 'archive'
+  puzzle: 1,        // puzzle number (daily / archive)
+  round: 0,         // bumps on every new round (guards delayed callbacks)
   word: '',
   parts: [],
   clues: [],
   entry: null,
   guesses: [],
-  slotState: [],   // 'green' | 'yellow' | null per part (best result so far)
+  slotState: [],    // 'green' | 'yellow' | null per part (best result so far)
   clueLevel: 0,
   revealed: false,
-  armed: false,    // the reveal needs a confirming second click
+  armed: false,     // the reveal needs a confirming second click
   armTimer: null,
   over: false,
   won: false,
   busy: false,
+  counted: false,   // daily result already added to the stats
   storageKey: null, // null = nothing saved (zen)
   recent: [],
   zenCount: 0,
@@ -40,12 +52,82 @@ const state = {
 const data = { games: {}, parts: {}, dict: new Set() };
 let els = {};
 
+const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const reducedMotion = () =>
   typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+const store = {
+  get(key, fallback = null) {
+    try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v); } catch (_) { return fallback; }
+  },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {} },
+};
+
 /* ---------------------------------------------------------
-   Deterministic clue selection (same word -> same clues)
+   Days, puzzles and stats
+   --------------------------------------------------------- */
+
+const dayNumber = (d = new Date()) => Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+const todayNum = () => Math.max(1, dayNumber() - FIRST_DAY + 1);
+const fmtDate = (n) =>
+  new Date((FIRST_DAY + n - 1) * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).toUpperCase();
+
+// Day N is the Nth entry of games.json, so new words go at the END of the file.
+function wordFor(n) {
+  const keys = Object.keys(data.games);
+  return keys[(n - 1) % keys.length];
+}
+
+const defaultStats = () => ({ played: 0, wins: 0, streak: 0, best: 0, lastWin: 0, dist: [0, 0, 0, 0] });
+const loadStats = () => Object.assign(defaultStats(), store.get(KEY.stats, {}));
+
+// A streak survives until a whole day is missed.
+function currentStreak() {
+  const s = loadStats();
+  return s.lastWin >= todayNum() - 1 ? s.streak : 0;
+}
+
+function recordDaily() {
+  const s = loadStats(), n = state.puzzle;
+  s.played += 1;
+  if (state.won) {
+    s.wins += 1;
+    s.streak = s.lastWin === n - 1 ? s.streak + 1 : 1;
+    s.lastWin = n;
+    s.best = Math.max(s.best, s.streak);
+    s.dist[Math.min(3, state.guesses.length - 1)] += 1;
+  } else {
+    s.streak = 0;
+  }
+  store.set(KEY.stats, s);
+}
+
+function puzzleStatus(n) {
+  const s = store.get(KEY.puzzle(n));
+  if (!s || s.word !== wordFor(n) || !Array.isArray(s.guesses)) return 'new';
+  if (s.guesses.includes(s.word)) return 'won';
+  if (s.revealed || s.guesses.length >= MAX_GUESSES) return 'lost';
+  return s.guesses.length || s.clueLevel ? 'part' : 'new';
+}
+
+// Spoiler-free: one line per guess, one square per part, a scissors mark when it sliced.
+function shareText() {
+  const label = state.mode === 'archive' ? `SLICE ARCHIVE #${state.puzzle}` : `SLICE #${state.puzzle}`;
+  const score = state.won ? `${state.guesses.length}/${MAX_GUESSES}` : `X/${MAX_GUESSES}`;
+  const streak = state.mode === 'daily' && currentStreak() > 1 ? ` 🔥${currentStreak()}` : '';
+  const lines = state.guesses.map((g) => {
+    const r = evaluate(g, state.word, state.parts);
+    const sq = r.partResults.map((p) => (p === 'green' ? '🟩' : p === 'yellow' ? '🟨' : '⬛')).join('');
+    return sq + (r.cuts.length ? ' ✂️' : '');
+  });
+  const url = typeof location !== 'undefined' && /^https?:/.test(location.protocol) ? `\n${location.origin}${location.pathname}` : '';
+  return `${label} ${score}${streak}\n${lines.join('\n')}${url}`;
+}
+
+/* ---------------------------------------------------------
+   Deterministic clue selection (same word -> same clues).
+   Zen mode mixes in the clock so the clues vary every round.
    --------------------------------------------------------- */
 
 function fnv1a(str) {
@@ -61,7 +143,7 @@ function pickClues(word, parts, partsDb) {
   return parts.map((part, i) => {
     const options = Array.isArray(partsDb[part]) && partsDb[part].length ? partsDb[part] : [part];
     let hashed = fnv1a(`${word}#${i}`);
-    if (state.mode == "zen") {
+    if (state.mode === 'zen') {
       hashed += Math.floor(Date.now() / 1000);
     }
     return options[hashed % options.length];
@@ -119,19 +201,6 @@ function evaluate(guess, word, parts) {
   return { letters, partResults, cuts: [...cutSet].sort((a, b) => a - b) };
 }
 
-/* ---------------------------------------------------------
-   Word selection
-   --------------------------------------------------------- */
-
-function todaysPuzzle() {
-  const d = new Date();
-  const day = Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
-  const n = day - LAUNCH_DAY;
-  const keys = Object.keys(data.games).sort();
-  const index = ((n % keys.length) + keys.length) % keys.length;
-  return { word: keys[index], number: n + 1 };
-}
-
 // Random word not yet served this session; the pool resets once it is used up.
 function randomWord() {
   const keys = Object.keys(data.games);
@@ -151,6 +220,99 @@ function isValidWord(w) {
   if (w === state.word || data.games[w]) return true;
   if (data.dict.size === 0) return true; // dictionary not populated yet -> accept anything
   return data.dict.has(w);
+}
+
+/* ---------------------------------------------------------
+   Sound effects (WebAudio, no files). Toggle in the header.
+   --------------------------------------------------------- */
+
+const sfx = (() => {
+  let ctx = null;
+  let on = store.get(KEY.sfx, true) !== false;
+
+  const audio = () => {
+    if (!on || typeof window === 'undefined') return null;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!ctx) ctx = new AC();
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  };
+  const tone = (c, f0, f1, dur, type, vol, delay = 0) => {
+    const t = c.currentTime + delay, o = c.createOscillator(), g = c.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(c.destination);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  };
+  const noise = (c, dur, vol, f0, f1) => {
+    const n = Math.floor(c.sampleRate * dur), buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(), t = c.currentTime;
+    f.type = 'bandpass'; f.Q.value = 0.9;
+    f.frequency.setValueAtTime(f0, t);
+    f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.value = vol;
+    src.buffer = buf;
+    src.connect(f).connect(g).connect(c.destination);
+    src.start(t);
+  };
+
+  return {
+    get on() { return on; },
+    toggle() { on = !on; store.set(KEY.sfx, on); return on; },
+    slash() { const c = audio(); if (!c) return; noise(c, 0.16, 0.55, 7000, 800); tone(c, 1100, 140, 0.1, 'sawtooth', 0.025); },
+    miss()  { const c = audio(); if (!c) return; tone(c, 180, 90, 0.09, 'triangle', 0.06); },
+    bad()   { const c = audio(); if (!c) return; tone(c, 150, 110, 0.12, 'square', 0.035); },
+    tick()  { const c = audio(); if (!c) return; tone(c, 880, 880, 0.04, 'square', 0.025); },
+    win()   { const c = audio(); if (!c) return; [523, 659, 784, 1047].forEach((f, i) => tone(c, f, f, 0.18, 'triangle', 0.06, i * 0.09)); },
+    lose()  { const c = audio(); if (!c) return; tone(c, 262, 131, 0.5, 'triangle', 0.06); },
+  };
+})();
+
+/* ---------------------------------------------------------
+   The sage: says short quotes above his head. The quote fades
+   in, holds, then slides away and fades out (see .q in CSS).
+   --------------------------------------------------------- */
+
+const QUOTES = {
+  start:   ['Welcome, student. Sit. Sip.', 'The bamboo is listening.', 'A word is two seeds in one husk.'],
+  hit:     ['Ah. A clean cut.', 'The blade finds the seam.', 'You hear that? A word breaking.', 'Two halves, one truth.', 'Swift. Quiet. Nearly right.'],
+  miss:    ['Hm. The blade met only air.', 'Even a miss teaches the wrist.', 'Silence is also an answer.', 'Breathe. Then cut again.', 'The word hides in plain sight.'],
+  invalid: ['That is not a word, young one.', 'The scrolls do not know it.', 'Too short. Breathe in.', 'Only letters, please.', 'You have tried that one.'],
+  win:     ['Well sliced, student.', 'The bamboo bows to you.', 'A clean cut. I am almost impressed.', 'Sip. You have earned it.'],
+  win1:    ['One cut? Were you listening to the wind?', 'First try... the tea spilled itself.'],
+  streak:  ['Day after day, the river carves stone.', 'A streak is a habit with a flame.', 'Consistency. The truest blade.'],
+  lose:    ['Defeat is only tea gone cold.', 'The word wins today. Tomorrow, you.', 'Even masters misjudge the bamboo.'],
+  clue:    ['A hint? There is no shame in it.', 'Seek, and the parts reveal themselves.', 'Counting letters is a fine start.'],
+  reveal:  ['Mercy is also a lesson.', 'Now you know. Do not forget.'],
+  daily:   ['The daily path. One word, one cut.', 'Each dawn, new bamboo.'],
+  zen:     ['Zen. No clock. No rush.', 'Breathe. There is no end here.', 'Cut for as long as you like.'],
+  archive: ['The scrolls of days gone by.', 'Old words keep their edge.'],
+  next:    ['A new word rises like steam.', 'Again. The blade remembers.'],
+  share:   ['Share wisely. Spoilers dull the blade.', 'Let others find their own cuts.'],
+  idle:    ['Mm. Good tea.', 'The river never hurries.', 'Sip... ahh.', 'A leaf falls. A word waits.', 'Do not rush the blade.'],
+};
+let lastQuote = '';
+
+function say(kind) {
+  const pool = QUOTES[kind];
+  const box = $('sage-quote');
+  if (!pool || !box) return;
+  let q;
+  do { q = pool[Math.floor(Math.random() * pool.length)]; } while (pool.length > 1 && q === lastQuote);
+  lastQuote = q;
+  box.replaceChildren();
+  const node = document.createElement('div');
+  node.className = 'q';
+  node.textContent = q;
+  node.addEventListener('animationend', () => node.remove());
+  setTimeout(() => node.remove(), 7000);   // fallback when animations are off
+  box.appendChild(node);
 }
 
 /* ---------------------------------------------------------
@@ -210,7 +372,7 @@ function previewTyping() {
 }
 
 /* ---------------------------------------------------------
-   Rendering: clue chips, hint, buttons, messages
+   Rendering: clue boxes, hint, buttons, messages
    --------------------------------------------------------- */
 
 function buildSlots() {
@@ -230,7 +392,7 @@ function buildSlots() {
   updateSlots();
 }
 
-// In place, so the CSS fades run instead of the chips being rebuilt.
+// In place, so the CSS fades run instead of the boxes being rebuilt.
 function updateSlots() {
   [...els.slots.children].forEach((slot, i) => {
     const st = state.won ? 'green' : state.slotState[i];
@@ -246,12 +408,12 @@ function updateSlots() {
   });
 }
 
-function popSlots(partResults) {
+function flashSlots(partResults) {
   [...els.slots.children].forEach((el, i) => {
     if (partResults[i]) {
-      el.classList.remove('pop');
+      el.classList.remove('flash');
       void el.offsetWidth;
-      el.classList.add('pop');
+      el.classList.add('flash');
     }
   });
 }
@@ -279,66 +441,68 @@ function applyEndState() {
   els.input.disabled = state.over;
   els.submit.disabled = state.over;
   els.next.classList.toggle('hidden', !(state.over && state.mode === 'zen'));
+  els.btnResults.classList.toggle('hidden', !(state.over && state.mode !== 'zen'));
   updateSlots();
   updateHint();
   updateClueButton();
   updateActiveRow();
 }
 
+function updateChips() {
+  els.streak.textContent = `STREAK ${currentStreak()}`;
+  els.puzzle.textContent =
+    state.mode === 'daily' ? `DAILY #${state.puzzle}` :
+    state.mode === 'archive' ? `ARCHIVE #${state.puzzle}` : `ZEN #${state.zenCount}`;
+  els.sfx.textContent = sfx.on ? 'SFX ON' : 'SFX OFF';
+  els.sfx.setAttribute('aria-pressed', String(sfx.on));
+}
+
 function setActiveMode() {
-  [['daily', els.btnDaily], ['zen', els.btnZen]].forEach(([m, btn]) =>
-    btn.setAttribute('aria-pressed', String(state.mode === m))
-  );
+  const inArchive = state.view === 'archive';
+  els.btnDaily.setAttribute('aria-pressed', String(state.mode === 'daily' && !inArchive));
+  els.btnZen.setAttribute('aria-pressed', String(state.mode === 'zen' && !inArchive));
+  els.btnArchive.setAttribute('aria-pressed', String(inArchive || state.mode === 'archive'));
 }
 
 /* ---------------------------------------------------------
-   Slash flipbook: a curved, pixel-art blade swept across a
-   small canvas, drawn frame by frame (8 frames).
+   The slash: a white, curved, pixel flipbook (5 frames, ~170ms).
+   Frame 0 is already the full-length cut, so it feels instant.
    --------------------------------------------------------- */
 
-const SLASH = { size: 28, frames: 8, frameMs: 42 };
+const SLASH = { size: 32, frames: 5, frameMs: 34 };
 
 function drawSlashFrame(ctx, f) {
   const N = SLASH.size;
   ctx.clearRect(0, 0, N, N);
-
-  // blade path: quadratic curve, top-right -> bottom-left, bulging left
-  const P0 = [21, 1], P1 = [4, 9], P2 = [9, 27];
+  const P0 = [28, 0], P1 = [6, 11], P2 = [10, 31];
   const at = (t) => {
     const u = 1 - t;
     return [u * u * P0[0] + 2 * u * t * P1[0] + t * t * P2[0],
             u * u * P0[1] + 2 * u * t * P1[1] + t * t * P2[1]];
   };
 
-  const grow = Math.min(1, (f + 1) / 4);          // head travels in frames 0-3
-  const tail = f < 4 ? 0 : (f - 3) / 5;          // tail catches up in frames 4-7
-  const fade = f < 5 ? 1 : 1 - (f - 4) / 4;      // thins out at the end
-  if (tail >= grow) return;
-
-  const layers = [
-    { grow: 2.2, color: 'rgba(217,115,154,.45)' }, // outer glow
-    { grow: 1.0, color: '#f4c4d6' },               // mid
-    { grow: 0,   color: '#ffffff' },               // core
-  ];
-  layers.forEach(({ grow: extra, color }) => {
-    ctx.fillStyle = color;
-    for (let t = tail; t <= grow; t += 0.01) {
-      const [x, y] = at(t);
-      const taper = Math.sin(Math.PI * Math.min(1, Math.max(0.08, t))); // thin at both ends
-      const w = Math.max(1, Math.round((taper * 2.6 + extra) * fade));
-      ctx.fillRect(Math.round(x - w / 2), Math.round(y - w / 2), w, w);
-    }
-  });
-
-  // sparkle pixels trailing the blade
-  if (f >= 2 && f <= 6) {
-    ctx.fillStyle = '#fff';
-    [[0.3, 3, -2], [0.55, -3, 2], [0.8, 2, 3]].forEach(([t, dx, dy], k) => {
-      if (t <= grow && t >= tail && (f + k) % 2 === 0) {
+  const tails  = [0, 0, 0.14, 0.42, 1];
+  const widths = [4.4, 3.4, 2.4, 1.5, 0];
+  if (widths[f] > 0) {
+    [['rgba(255,255,255,.4)', 2], ['#ffffff', 0]].forEach(([color, extra]) => {
+      ctx.fillStyle = color;
+      for (let t = tails[f]; t <= 1; t += 0.008) {
         const [x, y] = at(t);
-        ctx.fillRect(Math.round(x + dx), Math.round(y + dy), 1, 1);
+        const taper = Math.pow(Math.sin(Math.PI * Math.min(1, Math.max(0.06, t))), 0.7);
+        const w = Math.max(1, Math.round(widths[f] * taper)) + extra;
+        ctx.fillRect(Math.round(x - w / 2), Math.round(y - w / 2), w, w);
       }
     });
+  }
+  // white sparks thrown off the blade
+  if (f >= 1) {
+    ctx.fillStyle = '#fff';
+    for (let k = 0; k < 11; k++) {
+      if ((f + k) % 2) continue;
+      const [x, y] = at((k + 0.5) / 11);
+      const side = k % 2 ? 1 : -1, dist = f * 2.6 + (k % 3);
+      ctx.fillRect(Math.round(x + side * dist), Math.round(y + (k % 4) - 1.5), 1, 1);
+    }
   }
 }
 
@@ -370,8 +534,10 @@ function playSlash(rowEl, x) {
 }
 
 /* ---------------------------------------------------------
-   Reveal: no subword -> no animation. Subword -> slash the
-   boundaries around it, split the word, then colour it.
+   Reveal. No subword in the guess -> no animation at all.
+   Subword -> the slash lands instantly at the boundaries around
+   it, the word splits and lights up in the same beat.
+   Returns true when the guess contained a subword.
    --------------------------------------------------------- */
 
 async function revealRow(i, guess, result, win) {
@@ -380,42 +546,35 @@ async function revealRow(i, guess, result, win) {
   rowEl.classList.add('done');
   const letters = [...rowEl.querySelectorAll('.ltr')];
   const states = win ? guess.split('').map(() => 'green') : result.letters;
+  const paint = () => letters.forEach((l, k) => { l.dataset.state = states[k] || 'miss'; });
 
-  if (!states.some(Boolean)) {                 // nothing found: just mark it, no animation
-    letters.forEach((l) => { l.dataset.state = 'miss'; });
-    return;
-  }
-
+  if (!states.some(Boolean)) { paint(); return false; }          // nothing found: no animation
   const cuts = result.cuts;
-  const colorAll = (stagger) => {
-    letters.forEach((l, k) => setTimeout(() => { l.dataset.state = states[k] || 'miss'; }, k * stagger));
-  };
+  if (!cuts.length || reducedMotion()) { paint(); return true; }  // e.g. the guess is exactly one part
 
-  if (!cuts.length || reducedMotion()) {       // e.g. guess is exactly one part
-    colorAll(reducedMotion() ? 0 : 50);
-    await sleep(reducedMotion() ? 0 : letters.length * 50 + 250);
-    return;
-  }
-
-  // measure cut positions before the split moves anything
-  const rowBox = rowEl.getBoundingClientRect();
+  const rowBox = rowEl.getBoundingClientRect();                    // measure before the split moves anything
   const xs = cuts.map((c) => {
-    const a = letters[c - 1].getBoundingClientRect();
-    const b = letters[c].getBoundingClientRect();
+    const a = letters[c - 1].getBoundingClientRect(), b = letters[c].getBoundingClientRect();
     return (a.right + b.left) / 2 - rowBox.left;
   });
 
-  const slashes = xs.map((x, n) => sleep(n * 150).then(() => playSlash(rowEl, x)));
-  await sleep(150 * (cuts.length - 1) + 170); // blade lands
+  sfx.slash();
+  const slashes = xs.map((x, n) => sleep(n * 45).then(() => playSlash(rowEl, x)));
+  await sleep(SLASH.frameMs);                                      // the first frame is the cut
 
-  cuts.forEach((c) => {
-    letters[c - 1].classList.add('cut-after');
-    letters.forEach((l, k) => l.classList.add(k < c ? 'jolt-l' : 'jolt-r'));
+  cuts.forEach((c) => letters[c - 1].classList.add('cut-after'));
+  letters.forEach((l, k) => {
+    if (k < cuts[0]) l.classList.add('shove-l');
+    else if (k >= cuts[cuts.length - 1]) l.classList.add('shove-r');
   });
-  colorAll(55);
+  paint();
+  rowEl.classList.remove('flash'); void rowEl.offsetWidth; rowEl.classList.add('flash');
+  els.app.classList.remove('hit'); void els.app.offsetWidth; els.app.classList.add('hit');
   await Promise.all(slashes);
-  await sleep(letters.length * 55 + 120);
-  letters.forEach((l) => l.classList.remove('jolt-l', 'jolt-r'));
+  letters.forEach((l) => l.classList.remove('shove-l', 'shove-r'));
+  rowEl.classList.remove('flash');
+  els.app.classList.remove('hit');
+  return true;
 }
 
 /* ---------------------------------------------------------
@@ -440,8 +599,35 @@ function checkEnd(guess) {
   applyEndState();
 }
 
+// Called once when a round ends (silent = restoring a saved, finished round).
+function finishRound(silent = false) {
+  if (!state.over) return;
+  if (state.mode === 'daily' && !state.counted) {
+    recordDaily();
+    state.counted = true;
+  }
+  updateChips();
+  save();
+  if (silent) return;
+
+  if (state.won) {
+    sfx.win();
+    const streak = state.mode === 'daily' && currentStreak() >= 3 && Math.random() < 0.6;
+    say(state.guesses.length === 1 ? 'win1' : streak ? 'streak' : 'win');
+  } else {
+    sfx.lose();
+    say(state.revealed ? 'reveal' : 'lose');
+  }
+  if (state.mode !== 'zen') {
+    const round = state.round;
+    setTimeout(() => { if (state.round === round && state.over && state.view === 'game') showView('results'); }, 900);
+  }
+}
+
 function flash(text) {
   setMessage(text, 'warn');
+  sfx.bad();
+  say('invalid');
   const row = els.grid.children[state.guesses.length];
   if (row) {
     row.classList.remove('shake');
@@ -467,15 +653,17 @@ async function submitGuess() {
 
   const result = evaluate(guess, state.word, state.parts);
   const win = guess === state.word;
-  await revealRow(idx, guess, result, win);
+  const hit = await revealRow(idx, guess, result, win);
+  if (!hit) sfx.miss();
 
   applyResult(result);
   checkEnd(guess);
-  popSlots(win ? state.parts.map(() => 'green') : result.partResults);
+  flashSlots(win ? state.parts.map(() => 'green') : result.partResults);
   save();
-
   state.busy = false;
-  if (!state.over) els.input.focus();
+
+  if (state.over) finishRound();
+  else { say(hit ? 'hit' : 'miss'); els.input.focus(); }
 }
 
 /* ---------------------------------------------------------
@@ -489,10 +677,12 @@ function disarm() {
 
 function pressClue() {
   if (state.over || state.busy) return;
+  sfx.tick();
 
   if (state.clueLevel === 0) {
     state.clueLevel = 1;
     updateSlots();
+    say('clue');
   } else if (state.clueLevel === 1) {
     state.clueLevel = 2;
     updateHint();
@@ -508,7 +698,7 @@ function pressClue() {
     state.over = true;
     setMessage(`THE WORD WAS ${state.word.toUpperCase()}`, 'lose');
     applyEndState();
-    save();
+    finishRound();
     return;
   }
   updateClueButton();
@@ -516,27 +706,134 @@ function pressClue() {
 }
 
 /* ---------------------------------------------------------
-   Persistence (daily only)
+   Views: game / results / archive
+   --------------------------------------------------------- */
+
+function showView(v) {
+  state.view = v;
+  els.vGame.classList.toggle('hidden', v !== 'game');
+  els.vResults.classList.toggle('hidden', v !== 'results');
+  els.vArchive.classList.toggle('hidden', v !== 'archive');
+  setActiveMode();
+  if (v === 'results') renderResults();
+  if (v === 'archive') renderArchive();
+  if (v === 'game' && !state.over) els.input.focus();
+}
+
+const backView = () => (state.mode !== 'zen' && state.over ? 'results' : 'game');
+
+function renderResults() {
+  const stats = loadStats();
+  els.resKicker.textContent =
+    `${state.mode === 'archive' ? 'ARCHIVE' : 'DAILY'} #${state.puzzle} · ${fmtDate(state.puzzle)}`;
+  els.resTitle.textContent = state.won ? 'SLICED!' : state.revealed ? 'REVEALED' : 'NOT QUITE';
+  els.resTitle.classList.toggle('lose', !state.won);
+  els.resWord.textContent = `${state.parts.join(' + ')} = ${state.word}`.toUpperCase();
+
+  els.statPlayed.textContent = String(stats.played);
+  els.statWin.textContent = String(stats.played ? Math.round((stats.wins / stats.played) * 100) : 0);
+  els.statStreak.textContent = String(currentStreak());
+  els.statBest.textContent = String(stats.best);
+
+  const max = Math.max(1, ...stats.dist);
+  els.dist.replaceChildren();
+  stats.dist.forEach((count, i) => {
+    const row = document.createElement('div');
+    row.className = 'dist-row' + (state.won && state.mode === 'daily' && state.guesses.length === i + 1 ? ' hl' : '');
+    const label = document.createElement('i');
+    label.textContent = String(i + 1);
+    const bar = document.createElement('div');
+    bar.textContent = String(count);
+    bar.style.width = `${Math.max(8, Math.round((count / max) * 100))}%`;
+    row.append(label, bar);
+    els.dist.appendChild(row);
+  });
+
+  els.sharePreview.textContent = shareText();
+  els.btnShare.classList.toggle('hidden', typeof navigator === 'undefined' || !navigator.share);
+  tickCountdown();
+}
+
+function tickCountdown() {
+  if (state.view !== 'results' || state.mode !== 'daily') { els.nextIn.textContent = ''; return; }
+  const now = new Date(), next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const s = Math.max(0, Math.floor((next - now) / 1000));
+  const p = (n) => String(n).padStart(2, '0');
+  els.nextIn.textContent = `NEXT SLICE IN ${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
+}
+
+// If the page was left open past midnight, move on to the new daily.
+function refreshDay() {
+  tickCountdown();
+  if (state.mode === 'daily' && todayNum() !== state.puzzle) startDaily();
+}
+
+async function copyResult() {
+  const text = shareText();
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      ok = document.execCommand('copy');
+      ta.remove();
+    } catch (__) {}
+  }
+  els.btnCopy.textContent = ok ? 'COPIED!' : 'PRESS CTRL+C';
+  setTimeout(() => { els.btnCopy.textContent = 'COPY RESULT'; }, 1800);
+  sfx.tick();
+  say('share');
+}
+
+function shareResult() {
+  if (navigator.share) navigator.share({ text: shareText() }).catch(() => {});
+}
+
+function renderArchive() {
+  const today = todayNum();
+  let solved = 0;
+  els.archList.replaceChildren();
+  for (let n = today; n >= 1; n--) {
+    const st = puzzleStatus(n);
+    if (st === 'won') solved += 1;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `day day-${st}${n === today ? ' today' : ''}`;
+    b.dataset.n = String(n);
+    const mk = (cls, text) => { const s = document.createElement('span'); s.className = cls; s.textContent = text; return s; };
+    b.append(
+      mk('day-n', `#${n}`),
+      mk('day-d', n === today ? `${fmtDate(n)} · TODAY` : fmtDate(n)),
+      mk('day-m', { won: 'SOLVED', lost: 'MISSED', part: 'IN PROGRESS', new: 'NEW' }[st]),
+    );
+    els.archList.appendChild(b);
+  }
+  els.archCount.textContent = `${solved}/${today} SOLVED`;
+}
+
+/* ---------------------------------------------------------
+   Persistence (daily + archive; zen is never saved)
    --------------------------------------------------------- */
 
 function save() {
   if (!state.storageKey) return;
-  try {
-    localStorage.setItem(state.storageKey, JSON.stringify({
-      guesses: state.guesses,
-      clueLevel: state.clueLevel,
-      revealed: state.revealed,
-    }));
-  } catch (_) {}
+  store.set(state.storageKey, {
+    word: state.word,
+    guesses: state.guesses,
+    clueLevel: state.clueLevel,
+    revealed: state.revealed,
+    counted: state.counted,
+  });
 }
 
 function restore() {
   if (!state.storageKey) return;
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(state.storageKey)); } catch (_) {}
-  if (!saved?.guesses) return;
+  const saved = store.get(state.storageKey);
+  if (!saved || saved.word !== state.word || !Array.isArray(saved.guesses)) return;
 
   state.clueLevel = Math.max(0, Math.min(2, saved.clueLevel | 0));
+  state.counted = Boolean(saved.counted);
   saved.guesses.forEach((g) => {
     const idx = state.guesses.length;
     state.guesses.push(g);
@@ -553,6 +850,7 @@ function restore() {
     setMessage(`THE WORD WAS ${state.word.toUpperCase()}`, 'lose');
   }
   applyEndState();
+  if (state.over) finishRound(true);
 }
 
 /* ---------------------------------------------------------
@@ -562,6 +860,7 @@ function restore() {
 function startGame(word, storageKey) {
   disarm();
   const entry = data.games[word];
+  state.round += 1;
   Object.assign(state, {
     word,
     entry,
@@ -574,6 +873,7 @@ function startGame(word, storageKey) {
     over: false,
     won: false,
     busy: false,
+    counted: false,
     storageKey,
   });
   els.input.value = '';
@@ -582,21 +882,25 @@ function startGame(word, storageKey) {
   setMessage('');
   applyEndState();
   restore();
-  setActiveMode();
-  if (!state.over) els.input.focus();
+  updateChips();
+  showView(backView());
 }
 
 function startDaily() {
   state.mode = 'daily';
-  const { word, number } = todaysPuzzle();
-  els.puzzle.textContent = `DAILY #${number}`;
-  startGame(word, `slice:daily:${number}`);
+  state.puzzle = todayNum();
+  startGame(wordFor(state.puzzle), KEY.puzzle(state.puzzle));
+}
+
+function startArchive(n) {
+  state.mode = 'archive';
+  state.puzzle = n;
+  startGame(wordFor(n), KEY.puzzle(n));
 }
 
 function startZen() {
   state.mode = 'zen';
   state.zenCount += 1;
-  els.puzzle.textContent = `ZEN #${state.zenCount}`;
   startGame(randomWord(), null);
 }
 
@@ -614,7 +918,6 @@ async function loadJSON(file, optional = false) {
     throw err;
   }
 }
-
 /* =========================================================
    Scenery: pixel-sprite helpers
    Every sprite is painted on a small grid (Pix), then turned
@@ -736,7 +1039,7 @@ function pagoda(tiers = 5) {
     p.rect(x0, bodyTop + 7, bw, 1, C.woodDk);
     [x0, x0 + bw - 2, Math.round(cx) - 1].forEach((x) => p.rect(x, bodyTop, 2, 8, C.wood));
     p.rect(Math.round(cx) - 2, bodyTop + 2, 4, 4, C.shadow);           // doorway
-    p.rect(Math.round(cx) - 1, bodyTop + 3, 2, 2, '#e8b25a');          // lit window
+    p.rect(Math.round(cx) - 1, bodyTop + 3, 2, 2, '#4a3a38');          // window
 
     const widths = [bw + 2, bw + 7, bw + 11, bw + 15, bw + 15];
     widths.forEach((w, k) => {
@@ -788,7 +1091,7 @@ function shrine() {
   for (let y = H - 31; y < H - 19; y += 4) p.rect(11, y, 72, 1, C.wallDk);
   p.rect(37, H - 34, 20, 17, '#241a22');                                          // doorway
   p.rect(39, H - 32, 16, 13, '#3a2a28');
-  p.rect(45, H - 30, 4, 5, '#e8b25a');                                            // shrine lamp
+  p.rect(45, H - 30, 4, 5, '#5a4640');                                            // offering box
   [10, 27, 44, 61, 80].forEach((x) => { p.rect(x, H - 36, 3, 19, C.red); p.rect(x + 2, H - 36, 1, 19, C.redDk); });
 
   const rows = 15;
@@ -813,7 +1116,7 @@ function stoneLantern() {
   p.rect(3, 23, 8, 5, s); p.rect(3, 23, 8, 1, hi); p.rect(10, 23, 1, 5, dk);
   p.rect(6, 15, 2, 8, s); p.rect(6, 15, 1, 8, hi);
   p.rect(3, 9, 8, 6, s); p.rect(3, 9, 8, 1, hi); p.rect(10, 9, 1, 6, dk);
-  p.rect(5, 10, 4, 4, '#f0b45a'); p.rect(6, 11, 2, 2, '#fff0c0');
+  p.rect(5, 10, 4, 4, '#2a2630'); p.rect(6, 11, 2, 2, '#3c3844');
   p.rect(0, 6, 14, 3, s); p.rect(0, 6, 14, 1, hi); p.rect(13, 6, 1, 3, dk);
   p.rect(3, 3, 8, 3, s); p.rect(6, 0, 2, 3, hi);
   return p;
@@ -844,40 +1147,10 @@ function boulder(seed, w, h) {
   return p;
 }
 
-/* ---------- Mountains (Fuji-like cone + ridgeline) and rolling hills ---------- */
-function mountains(seed, W = 430, H = 62) {
-  const r = rng(seed), p = new Pix(W, H), fx = Math.round(W * 0.62);
-  const ph = [r() * 6, r() * 6, r() * 6];
-  for (let x = 0; x < W; x++) {
-    let h = 15 + 6 * Math.sin(x * 0.045 + ph[0]) + 4 * Math.sin(x * 0.11 + ph[1]) + 2 * Math.sin(x * 0.31 + ph[2]);
-    const fuji = 46 - Math.abs(x - fx) * 0.6;
-    h = Math.max(h, fuji + (r() < 0.3 ? 1 : 0));
-    const top = Math.round(H - h);
-    for (let y = top; y < H; y++) p.set(x, y, y < top + 4 ? '#6a65a4' : y < top + 14 ? '#5a5694' : '#4b4880');
-    p.set(x, top, '#9a95cf');
-    if (fuji > 34) {
-      const snow = Math.round((fuji - 34) * 1.1 + Math.sin(x * 0.9) * 1.6 + r() * 1.2);
-      for (let y = top; y < top + snow; y++) p.set(x, y, y === top ? '#eef0fb' : y < top + snow - 1 ? '#cdd0ea' : '#9ea2cf');
-    }
-  }
-  return p;
-}
-
-function hills(seed, W = 430, H = 40, tones = ['#27494a', '#1f3d3e', '#18302f']) {
-  const r = rng(seed), p = new Pix(W, H), ph = [r() * 6, r() * 6];
-  for (let x = 0; x < W; x++) {
-    const h = 16 + 7 * Math.sin(x * 0.03 + ph[0]) + 4 * Math.sin(x * 0.09 + ph[1]) + (r() < 0.12 ? 1 : 0);
-    const top = Math.round(H - h);
-    for (let y = top; y < H; y++) p.set(x, y, y < top + 3 ? tones[0] : y < top + 12 ? tones[1] : tones[2]);
-    if (r() < 0.05) for (let k = 1; k < 5; k++) p.set(x, top - k, tones[0]);   // pine / bamboo tips
-  }
-  return p;
-}
-
 /* ---------- Cliff with a notch the waterfall spills over ---------- */
 function cliff(seed) {
-  const W = 64, H = 72, r = rng(seed), p = new Pix(W, H), n0 = 26, n1 = 37, notchTop = 16;
-  const tones = ['#383450', '#48435f', '#5b5675', '#746e92'];
+  const W = 64, H = 72, r = rng(seed), p = new Pix(W, H), n0 = 24, n1 = 40, notchTop = 16;
+  const tones = ['#2f3d3c', '#3e4f4c', '#506560', '#6a8078'];
   for (let x = 0; x < W; x++) {
     let top = 9 + Math.round(Math.sin(x * 0.35 + seed) * 3 + Math.sin(x * 0.13) * 4);
     if (x >= n0 && x <= n1) top = notchTop;
@@ -891,44 +1164,121 @@ function cliff(seed) {
   return { p, n0, n1, notchTop };
 }
 
+
+/* ---------- Canopy: hanging bamboo-leaf blades (tiles seamlessly sideways) ---------- */
+function canopyTile(seed, W = 96, H = 50) {
+  const r = rng(seed), p = new Pix(W, H);
+  const tones = ['#0e2a19', '#16422a', '#235a36', '#347843', '#4f9c53'];
+  const put = (x, y, c) => p.set(((Math.round(x) % W) + W) % W, y, c);
+  for (let x = 0; x < W; x++) {                                    // dense dark mass along the top edge
+    const d = 6 + Math.round(r() * 5 + Math.sin(x * 0.4) * 2);
+    for (let y = 0; y < d; y++) p.set(x, y, tones[y < 3 ? 0 : 1]);
+  }
+  for (let n = 0; n < 74; n++) {                                   // hanging blades
+    const ax = r() * W, ay = r() * 9, len = 7 + r() * 22, ang = (r() - 0.5) * 2.1, ti = 1 + Math.floor(r() * 4);
+    for (let s = 0; s <= len; s++) {
+      const t = s / len, x = ax + Math.sin(ang) * s + Math.sin(t * 3) * 0.8, y = ay + Math.cos(ang) * s * 0.92;
+      const th = Math.max(1, Math.round(Math.sin(Math.PI * t) * 2.2));
+      for (let k = 0; k < th; k++) put(x + k, y, tones[ti]);
+      if (th > 1 && t > 0.15 && t < 0.6) put(x, y, tones[Math.min(4, ti + 1)]);   // lit vein
+    }
+  }
+  return p;
+}
+
+/* ---------- Water ripples (a tile that repeats and scrolls) ---------- */
+function riverTile(seed, hi, lo) {
+  const r = rng(seed), p = new Pix(32, 12);
+  for (let n = 0; n < 15; n++) {
+    const len = 3 + Math.floor(r() * 5);
+    p.rect(Math.floor(r() * (32 - len - 1)), Math.floor(r() * 12), len, 1, r() > 0.35 ? hi : lo);
+  }
+  return p;
+}
+
+/* ---------- Stone steps climbing the mountain ---------- */
+function stairs() {
+  const W = 46, H = 36, r = rng(7), p = new Pix(W, H);
+  const stone = '#7d788c', hi = '#a29db3', dk = '#4f4a5e', moss = '#4a8a58';
+  for (let i = 0; i < 9; i++) {                                    // i = 0 is the top step: narrower with distance
+    const w = 20 + i * 3, x0 = Math.round((W - w) / 2), y = i * 4;
+    p.rect(x0, y, w, 4, stone);
+    p.rect(x0, y, w, 1, hi);
+    p.rect(x0, y + 3, w, 1, dk);
+    for (let k = 0; k < w; k += 6) p.set(x0 + k + (i % 3), y + 2, dk);
+    if (r() < 0.6) p.rect(x0 + Math.floor(r() * (w - 3)), y, 3, 1, moss);
+  }
+  return p;
+}
+
+/* ---------- The old sage (meditating, sipping tea). Two frames: idle + sip ---------- */
+function sageFrame(sip) {
+  const p = new Pix(32, 36);
+  const skin = '#e2b48a', skinDk = '#c08a62', skinHi = '#f1cfae';
+  const robe = '#b8703a', robeHi = '#d38d4a', robeDk = '#8a4f26', sash = '#7a3b2c', under = '#ecdcb8';
+  const white = '#f4f2ec', whiteDk = '#cfcbc2', dark = '#2e2119';
+  const wood = '#6b4a32', woodDk = '#4a3222', woodHi = '#8a6347';
+  const cupC = '#efe6d6', cupDk = '#b9ae9a', tea = '#8a5a2a';
+
+  p.rect(2, 31, 28, 5, woodDk); p.rect(3, 30, 26, 2, wood); p.rect(3, 30, 26, 1, woodHi);          // stone seat
+  p.rect(3, 26, 26, 5, robe); p.rect(3, 26, 26, 1, robeHi); p.rect(3, 30, 26, 1, robeDk);          // crossed legs
+  p.rect(5, 28, 8, 2, robeDk); p.rect(19, 28, 8, 2, robeDk);
+  p.rect(9, 14, 14, 13, robe); p.rect(9, 14, 2, 13, robeHi); p.rect(21, 14, 2, 13, robeDk);        // torso
+  p.rect(14, 14, 4, 5, under); p.rect(9, 22, 14, 2, sash);
+
+  p.rect(12, 2, 8, 1, skin); p.rect(11, 3, 10, 9, skin);                                            // head
+  p.rect(10, 7, 1, 3, skin); p.rect(21, 7, 1, 3, skin);
+  p.set(14, 3, skinHi); p.set(15, 3, skinHi);
+  p.rect(14, 0, 4, 2, white); p.rect(10, 4, 1, 3, white); p.rect(21, 4, 1, 3, white);              // topknot + side hair
+  p.rect(12, 5, 3, 1, white); p.rect(17, 5, 3, 1, white);                                           // bushy brows
+  p.rect(12, 7, 3, 1, dark); p.rect(17, 7, 3, 1, dark);                                             // closed eyes
+  p.rect(15, 8, 2, 2, skinDk);                                                                      // nose
+  p.rect(12, 10, 8, 1, white); p.rect(11, 11, 10, 3, white); p.rect(12, 14, 8, 3, white);           // moustache + long beard
+  p.rect(13, 17, 6, 3, white); p.rect(14, 20, 4, 2, white);
+  p.rect(20, 11, 1, 3, whiteDk); p.rect(19, 14, 1, 3, whiteDk); p.rect(18, 17, 1, 3, whiteDk); p.rect(17, 20, 1, 2, whiteDk);
+
+  if (!sip) {                                                                                       // cup resting in both hands
+    p.rect(8, 20, 16, 4, robe); p.rect(8, 20, 16, 1, robeHi); p.rect(8, 23, 16, 1, robeDk);
+    p.rect(13, 20, 6, 3, skin);
+    p.rect(14, 17, 5, 4, cupC); p.rect(14, 20, 5, 1, cupDk); p.rect(15, 17, 3, 1, tea);
+  } else {                                                                                          // cup raised to the lips
+    p.rect(8, 15, 3, 7, robe); p.rect(21, 15, 3, 7, robe);
+    p.rect(11, 13, 3, 3, skin); p.rect(18, 13, 3, 3, skin);
+    p.rect(13, 11, 6, 4, cupC); p.rect(13, 14, 6, 1, cupDk); p.rect(14, 11, 4, 1, tea);
+  }
+  return p;
+}
+
+function buildSage() {
+  const steam = (l, b, d, sx) => `<i class="steam" style="left:${l}px;bottom:${b}px;--d:${d}s;--sx:${sx}px"></i>`;
+  $('sage-body').innerHTML =
+    `<div class="sage-frame f-idle">${sageFrame(false).svg(3)}${steam(46, 58, 0, 3)}${steam(52, 58, 1.2, -3)}${steam(49, 58, 0.6, 2)}</div>` +
+    `<div class="sage-frame f-sip">${sageFrame(true).svg(3)}${steam(60, 74, 0, 4)}${steam(55, 74, 1.2, -2)}</div>`;
+}
+
 /* =========================================================
-   Scenery: scene assembly
-   Layers (back -> front): stars, mountains, far temples + hills,
-   far bamboo, waterfalls, mid bamboo, cherry trees, shrine /
-   pagoda / torii, near bamboo, ground details, particles.
+   Scenery: scene assembly (a bamboo forest at midday)
+   Back -> front: far haze bamboo + distant temples, light shafts,
+   stairs / torii path + mid bamboo, river + waterfall + rocks,
+   cherry trees, near bamboo, foreground bank, canopy, particles.
+   The tallest bamboo runs off the top and the canopy closes it,
+   so no sky (or sun) is ever visible.
    ========================================================= */
 
-const GROUND = 36; // px height of the ground strip
+const FAR_BANK = 128;                 // where the far bank meets the river (px from the bottom)
+const RIVER_Y = 40, RIVER_H = 92;     // the river's band
+const NEAR_BANK = 40;                 // foreground bank height
 
 function buildScenery() {
   const r = rng(20261121);
   const between = (a, b) => a + r() * (b - a);
-  const host = (id) => document.getElementById(id);
-  const add = (id, html) => host(id).insertAdjacentHTML('beforeend', html);
+  const add = (id, html) => $(id).insertAdjacentHTML('beforeend', html);
   const sprite = (id, pix, scale, pos, extra = '') => add(id, pix.svg(scale, `${pos};${extra}`));
+  const uri = (pix, scale) =>
+    'data:image/svg+xml;utf8,' + encodeURIComponent(pix.svg(scale).replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" '));
+  const haze = 'filter:brightness(.62) saturate(.6);opacity:.8';
 
-  /* ----- sky ----- */
-  let stars = '';
-  for (let i = 0; i < 46; i++) {
-    stars += `<div class="star" style="left:${between(0, 100).toFixed(1)}%;top:${between(1, 42).toFixed(1)}%;` +
-      `width:${r() > 0.8 ? 3 : 2}px;height:${r() > 0.8 ? 3 : 2}px;--dur:${between(2, 5).toFixed(1)}s;--delay:-${between(0, 5).toFixed(1)}s"></div>`;
-  }
-  add('stars', stars);
-
-  /* ----- distant mountains (Fuji-like cone, snow cap) ----- */
-  sprite('L-mount', mountains(11), 6, `left:50%;margin-left:-1290px;bottom:calc(${GROUND}px + 14vh)`);
-
-  /* ----- far temples on hazy hills ----- */
-  const faded = 'filter:brightness(.5) saturate(.6);opacity:.8';
-  sprite('L-far', pagoda(5), 2, `left:30%;bottom:${GROUND + 70}px`, faded);
-  sprite('L-far', pagoda(3), 2, `left:70%;bottom:${GROUND + 66}px`, faded);
-  sprite('L-far', shrine(), 2, `left:52%;bottom:${GROUND + 58}px`, faded);
-  add('L-far', `<div class="haze" style="bottom:${GROUND + 40}px"></div>`);
-  sprite('L-far', hills(21), 6, `left:50%;margin-left:-1290px;bottom:${GROUND - 6}px`);
-  sprite('L-far', hills(22, 430, 30, ['#2c5a4a', '#224a3c', '#183a2f']), 6, `left:50%;margin-left:-1290px;bottom:${GROUND - 14}px`);
-
-  /* ----- bamboo + leaves ----- */
-  const stalks = (id, count, cls, wRange, hRange, seg, leaves) => {
+  const stalks = (id, count, cls, wRange, hRange, seg, leaves, bottom) => {
     let html = '';
     for (let i = 0; i < count; i++) {
       const w = Math.round(between(...wRange) / 2) * 2;
@@ -938,78 +1288,108 @@ function buildScenery() {
         kids += `<div class="leaf${side ? '' : ' l'}" style="top:${(8 + r() * 70).toFixed(0)}%;${side ? 'left:100%' : 'right:100%'}"></div>`;
       }
       html += `<div class="stalk ${cls}" style="left:${(((i + r() * 0.9) / count) * 100).toFixed(2)}%;width:${w}px;` +
-        `height:${between(...hRange).toFixed(1)}vh;--seg:${seg + Math.round(r() * 3) * 8}px;` +
+        `height:${between(...hRange).toFixed(1)}vh;--b:${bottom}px;--seg:${seg + Math.round(r() * 3) * 8}px;` +
         `--dur:${between(4, 8).toFixed(1)}s;--delay:-${between(0, 6).toFixed(1)}s">${kids}</div>`;
     }
     add(id, html);
   };
-  stalks('bamboo-far', 52, 'stalk-far', [8, 14], [24, 46], 40, 1);
-  stalks('bamboo-mid', 30, 'stalk-mid', [14, 22], [40, 72], 56, 2);
-  stalks('bamboo-near', 11, 'stalk-near', [22, 34], [84, 120], 80, 3);
-  stalks('bamboo-mid', 16, 'stalk-mid', [10, 16], [12, 28], 36, 2);   // young shoots low in the grove
 
-  /* ----- waterfalls (cliff + animated falling water + mist + pool) ----- */
+  /* ----- far: temples up the mountain slope, behind thin haze bamboo ----- */
+  const terrace = (left, bottom, w) => add('L-back',
+    `<div style="position:absolute;left:${left};bottom:${bottom}px;width:${w}px;height:10px;background:#3b4a45;box-shadow:inset 0 3px 0 #587265"></div>`);
+  terrace('21%', FAR_BANK + 56, 200); sprite('L-back', shrine(), 2, `left:22%;bottom:${FAR_BANK + 64}px`, haze);
+  terrace('55%', FAR_BANK + 96, 150); sprite('L-back', pagoda(5), 2, `left:57%;bottom:${FAR_BANK + 104}px`, haze);
+  stalks('L-back', 84, 'stalk-far', [6, 12], [95, 125], 36, 0, FAR_BANK - 26);
+  add('L-back', `<div class="mist" style="bottom:${FAR_BANK - 40}px;height:58vh"></div>`);
+
+  /* ----- shafts of midday light ----- */
+  [[6, 70], [24, 110], [44, 60], [62, 120], [80, 80], [92, 56]].forEach(([left, w], i) =>
+    add('L-shaft', `<div class="shaft" style="left:${left}%;width:${w}px;--delay:-${i * 1.3}s"></div>`));
+
+  /* ----- mid: the stone steps up to the mountain shrine (right), then mid bamboo in front ----- */
+  const stack = (rightCss, bottom, w, items) => {
+    const inner = items.map(({ pix, S, y, extra }) =>
+      pix.svg(S, `position:absolute;left:${Math.round((w - pix.w * S) / 2)}px;bottom:${y}px;${extra || ''}`)).join('');
+    add('L-mid', `<div class="prop" style="right:${rightCss};bottom:${bottom}px;width:${w}px;height:1px">${inner}</div>`);
+  };
+  stalks('L-mid', 58, 'stalk-mid', [14, 22], [60, 100], 56, 2, FAR_BANK - 10);
+  stalks('L-mid', 22, 'stalk-mid', [10, 16], [12, 30], 36, 2, FAR_BANK - 10);   // young shoots
+  stack('5%', FAR_BANK - 6, 190, [
+    { pix: stairs(), S: 4, y: 0 },
+    { pix: torii(), S: 3, y: 8 },
+    { pix: torii(), S: 2, y: 82, extra: 'filter:brightness(.88)' },
+    { pix: torii(), S: 2, y: 138, extra: 'filter:brightness(.76)' },
+    { pix: shrine(), S: 2, y: 212, extra: 'filter:brightness(.66)' },
+  ]);
+  sprite('L-mid', stoneLantern(), 3, `right:calc(5% + 190px);bottom:${FAR_BANK - 6}px`);
+  sprite('L-mid', stoneLantern(), 3, `right:calc(5% - 40px);bottom:${FAR_BANK - 6}px`);
+
+  /* ----- river, waterfall, stepping stones, bank rocks ----- */
+  const tileA = uri(riverTile(31, '#78bcc2', '#1f5560'), 4), tileB = uri(riverTile(47, '#a4d6da', '#2a6672'), 4);
+  add('L-water',
+    `<div class="river" style="bottom:${RIVER_Y}px;height:${RIVER_H}px">` +
+      `<div class="flow" style="background-image:url('${tileA}');background-size:128px 48px;--dur:7s;--tw:128px"></div>` +
+      `<div class="flow" style="background-image:url('${tileB}');background-size:128px 48px;background-position:40px 20px;--dur:11s;--tw:128px;opacity:.65"></div>` +
+    `</div>`);
+
   const waterfall = (leftCss, S, seed, extra = '') => {
     const c = cliff(seed), w = c.p.w * S, h = c.p.h * S;
     const fx = (c.n0 + 1) * S, fw = (c.n1 - c.n0 - 1) * S, ft = c.notchTop * S;
     add('L-water',
-      `<div class="prop" style="left:${leftCss};bottom:${GROUND - 4}px;width:${w}px;height:${h}px;${extra}">` +
+      `<div class="prop" style="left:${leftCss};bottom:${RIVER_Y + 22}px;width:${w}px;height:${h}px;${extra}">` +
         c.p.svg(S, 'position:absolute;left:0;top:0') +
-        `<div class="fall" style="left:${fx}px;top:${ft}px;width:${fw}px;height:${h - ft - 4 * S}px"></div>` +
-        `<div class="pool" style="left:${fx - 10 * S}px;bottom:0;width:${fw + 20 * S}px"></div>` +
-        `<div class="fall-mist" style="left:${fx - 6 * S}px;bottom:${3 * S}px;width:${fw + 12 * S}px"></div>` +
+        `<div class="fall" style="left:${fx}px;top:${ft}px;width:${fw}px;height:${h - ft - 2 * S}px"></div>` +
+        `<div class="fall-mist" style="left:${fx - 5 * S}px;bottom:${S}px;width:${fw + 10 * S}px"></div>` +
       `</div>`);
   };
-  waterfall('17%', 3, 5);
-  waterfall('71%', 2, 9, 'filter:brightness(.75)');
+  waterfall('6%', 3, 5);
 
-  /* ----- cherry trees ----- */
-  sprite('L-trees', cherryTree(3), 2, `left:36%;bottom:${GROUND}px`, 'filter:brightness(.75)');
-  sprite('L-trees', cherryTree(8), 2, `left:30%;bottom:${GROUND}px`, 'filter:brightness(.85)');
-  sprite('L-trees', cherryTree(14), 4, `left:-3%;bottom:${GROUND}px`);
-  sprite('L-trees', cherryTree(19), 3, `right:30%;bottom:${GROUND}px`);
-  sprite('L-trees', cherryTree(27), 4, `right:-5%;bottom:${GROUND}px`);
+  [[36, 3, 8], [44, 2, 6], [52, 3, 5], [60, 2, 7]].forEach(([left, S, seed], i) =>   // stepping stones
+    sprite('L-water', boulder(60 + i, 12 + (i % 2) * 4, 7 + (i % 3) * 2), S, `left:${left}%;bottom:${RIVER_Y + 14 + (i % 3) * 12}px`));
+  [[3, 4], [16, 3], [27, 3], [71, 3], [80, 4], [94, 3]].forEach(([left, S], i) =>     // far-bank rocks
+    sprite('L-water', boulder(70 + i, 14 + (i % 3) * 4, 9 + (i % 2) * 4), S, `left:${left}%;bottom:${RIVER_Y + RIVER_H - 8}px`));
+  sprite('L-water', torii(), 3, `right:25%;bottom:${RIVER_Y + 16}px`);                // torii standing in the river
 
-  /* ----- shrine, pagoda, torii, lanterns ----- */
-  const glow = (css) => add('L-front',
-    `<div class="lantern-glow" style="position:absolute;${css};width:70px;height:70px;border-radius:50%;` +
-    `background:radial-gradient(circle, rgba(246,184,92,.55), transparent 68%)"></div>`);
-  sprite('L-front', shrine(), 3, `left:1%;bottom:${GROUND - 4}px`);
-  sprite('L-front', stoneLantern(), 3, `left:31%;bottom:${GROUND - 2}px`);
-  glow(`left:calc(31% - 12px);bottom:${GROUND + 40}px`);
-  sprite('L-front', torii(), 3, `right:22%;bottom:${GROUND - 3}px`);
-  sprite('L-front', stoneLantern(), 3, `right:21%;bottom:${GROUND - 2}px`);
-  sprite('L-front', stoneLantern(), 3, `right:42%;bottom:${GROUND - 2}px`);
-  glow(`right:calc(42% - 14px);bottom:${GROUND + 40}px`);
-  sprite('L-front', pagoda(5), 3, `right:4%;bottom:${GROUND - 4}px`);
+  /* ----- cherry trees (the sakura accent) ----- */
+  sprite('L-trees', cherryTree(14), 4, `left:-4%;bottom:${RIVER_Y + RIVER_H - 6}px`);
+  sprite('L-trees', cherryTree(8), 3, `left:19%;bottom:${RIVER_Y + RIVER_H - 6}px`, 'filter:brightness(.85)');
+  sprite('L-trees', cherryTree(19), 3, `right:27%;bottom:${RIVER_Y + RIVER_H - 6}px`, 'filter:brightness(.8)');
 
-  /* ----- ground: strip, stepping stones, boulders, tufts ----- */
-  add('L-ground',
-    `<div style="position:absolute;left:0;right:0;bottom:0;height:${GROUND}px;` +
-    `background:linear-gradient(180deg,#26513a 0 6px,#1c3d2c 6px 14px,#142e22 14px);` +
-    `border-top:3px solid #3a7a4c"></div>`);
-  for (let i = 0; i < 9; i++) {                                    // path stones toward the torii
-    add('L-ground', `<div style="position:absolute;right:${(22 + i * 2.2 + r()).toFixed(1)}%;bottom:${6 + Math.round(r() * 10)}px;` +
-      `width:${16 + Math.round(r() * 10)}px;height:6px;background:#6a6578;border-top:2px solid #8a849a"></div>`);
+  /* ----- near bamboo ----- */
+  stalks('L-near', 17, 'stalk-near', [22, 34], [90, 125], 80, 3, NEAR_BANK - 8);
+
+  /* ----- foreground bank: moss, boulders, ferns ----- */
+  add('L-fore',
+    `<div style="position:absolute;left:0;right:0;bottom:-60px;height:${NEAR_BANK + 60}px;background:#1d4a30;` +
+    `box-shadow:inset 0 3px 0 #3a7a4c, inset 0 6px 0 #2b5f3e"></div>`);
+  for (let i = 0; i < 9; i++) {                                                         // path stones
+    add('L-fore', `<div style="position:absolute;left:${(34 + i * 3.2 + r()).toFixed(1)}%;bottom:${6 + Math.round(r() * 12)}px;` +
+      `width:${16 + Math.round(r() * 10)}px;height:6px;background:#6a6578;box-shadow:inset 0 2px 0 #8a849a"></div>`);
   }
-  [[12, 4], [47, 3], [78, 4], [93, 3]].forEach(([left, s], i) =>
-    sprite('L-ground', boulder(40 + i, 14 + (i % 3) * 4, 10 + (i % 2) * 4), s, `left:${left}%;bottom:${GROUND - 8}px`));
+  [[12, 4], [47, 3], [78, 4], [93, 3]].forEach(([left, S], i) =>
+    sprite('L-fore', boulder(40 + i, 14 + (i % 3) * 4, 10 + (i % 2) * 4), S, `left:${left}%;bottom:${NEAR_BANK - 14}px`));
   const tones = [['#2e7a46', '#3d9a5a', '#245f38'], ['#4a8a3a', '#62a84c', '#386b2e'], ['#2a6a50', '#3a8a68', '#1f523e']];
-  for (let i = 0; i < 40; i++) {
-    sprite('L-ground', tuft(100 + i, tones[i % 3]), r() > 0.5 ? 3 : 2,
-      `left:${between(0, 98).toFixed(1)}%;bottom:${GROUND - 12 + Math.round(r() * 10)}px`);
+  for (let i = 0; i < 46; i++) {
+    sprite('L-fore', tuft(100 + i, tones[i % 3]), r() > 0.5 ? 3 : 2,
+      `left:${between(0, 98).toFixed(1)}%;bottom:${NEAR_BANK - 14 + Math.round(r() * 10)}px`);
   }
 
-  /* ----- sakura petals + floating white pixels ----- */
+  /* ----- canopy: closes the top so no sky shows ----- */
+  [41, 42, 43, 41, 42, 43].forEach((seed, i) =>
+    sprite('L-canopy', canopyTile(seed), 4, `left:${i * 384}px;top:-10px`, i % 2 ? 'transform:scaleX(-1)' : ''));
+  [52, 53, 54, 52, 53, 54].forEach((seed, i) =>
+    sprite('L-canopy', canopyTile(seed, 96, 36), 3, `left:${i * 288 - 40}px;top:-14px`, i % 2 ? 'transform:scaleX(-1)' : ''));
+
+  /* ----- sakura petals + floating white pixels (pollen in the light) ----- */
   let petals = '';
-  for (let i = 0; i < 28; i++) {
+  for (let i = 0; i < 24; i++) {
     const size = r() > 0.5 ? 6 : 4;
     petals += `<div class="petal" style="left:${between(0, 100).toFixed(1)}%;width:${size}px;height:${size - 2}px;` +
       `--dur:${between(10, 20).toFixed(1)}s;--delay:-${between(0, 20).toFixed(1)}s;--drift:${-Math.round(between(10, 40))}vw"></div>`;
   }
   add('petals', petals);
   let motes = '';
-  for (let i = 0; i < 45; i++) {
+  for (let i = 0; i < 55; i++) {
     const size = r() > 0.7 ? 3 : 2;
     motes += `<div class="mote" style="left:${between(0, 100).toFixed(1)}%;top:${between(8, 95).toFixed(1)}%;` +
       `width:${size}px;height:${size}px;--dur:${between(6, 14).toFixed(1)}s;--delay:-${between(0, 14).toFixed(1)}s;` +
@@ -1018,28 +1398,80 @@ function buildScenery() {
   add('motes', motes);
 }
 
+/* ---------- Mouse parallax: each layer drifts by its own depth ---------- */
+function initParallax() {
+  if (reducedMotion()) return;
+  const layers = [...document.querySelectorAll('.layer[data-depth]')].map((el) => ({ el, d: Number(el.dataset.depth) }));
+  let tx = 0, ty = 0, x = 0, y = 0, raf = 0;
+  const tick = () => {
+    x += (tx - x) * 0.07;
+    y += (ty - y) * 0.07;
+    layers.forEach(({ el, d }) => { el.style.transform = `translate3d(${(-x * d).toFixed(2)}px, ${(-y * d * 0.55).toFixed(2)}px, 0)`; });
+    raf = Math.abs(tx - x) > 0.002 || Math.abs(ty - y) > 0.002 ? requestAnimationFrame(tick) : 0;
+  };
+  window.addEventListener('pointermove', (e) => {
+    tx = (e.clientX / innerWidth - 0.5) * 2;
+    ty = (e.clientY / innerHeight - 0.5) * 2;
+    if (!raf) raf = requestAnimationFrame(tick);
+  }, { passive: true });
+}
+
 /* =========================================================
-   Boot
+   Mode switching + boot
    ========================================================= */
+
+function goDaily() {
+  if (state.busy) return;
+  if (state.mode === 'daily' && todayNum() === state.puzzle) { showView(backView()); return; }
+  startDaily();
+  say('daily');
+}
+
+function goZen() {
+  if (state.busy) return;
+  if (state.mode === 'zen') {
+    if (state.view === 'archive') { showView('game'); return; }
+    if (!state.over) { setMessage('FINISH THIS WORD FIRST', 'warn'); return; }
+    startZen();
+    say('next');
+    return;
+  }
+  startZen();
+  say('zen');
+}
+
+function goArchive() {
+  if (state.busy) return;
+  if (state.view === 'archive') { showView(backView()); return; }
+  showView('archive');
+  say('archive');
+}
+
+function pickArchiveDay(n) {
+  if (state.busy) return;
+  if (n === todayNum()) {
+    if (state.mode === 'daily' && state.puzzle === n) showView(backView()); else startDaily();
+  } else if (state.mode === 'archive' && state.puzzle === n) showView(backView());
+  else startArchive(n);
+}
 
 async function boot() {
   els = {
-    grid: document.getElementById('grid'),
-    slots: document.getElementById('slots'),
-    input: document.getElementById('guess'),
-    submit: document.getElementById('submit'),
-    msg: document.getElementById('message'),
-    hint: document.getElementById('hint'),
-    puzzle: document.getElementById('puzzle-no'),
-    form: document.getElementById('guess-form'),
-    clue: document.getElementById('btn-clue'),
-    next: document.getElementById('btn-next'),
-    btnDaily: document.getElementById('btn-daily'),
-    btnZen: document.getElementById('btn-zen'),
-    btnArchive: document.getElementById('btn-archive'),
+    app: $('app'), grid: $('grid'), slots: $('slots'), input: $('guess'), submit: $('submit'),
+    msg: $('message'), hint: $('hint'), puzzle: $('puzzle-no'), streak: $('streak-chip'), sfx: $('btn-sfx'),
+    form: $('guess-form'), clue: $('btn-clue'), next: $('btn-next'), btnResults: $('btn-results'),
+    btnDaily: $('btn-daily'), btnZen: $('btn-zen'), btnArchive: $('btn-archive'),
+    vGame: $('view-game'), vResults: $('view-results'), vArchive: $('view-archive'),
+    resKicker: $('res-kicker'), resTitle: $('res-title'), resWord: $('res-word'),
+    statPlayed: $('stat-played'), statWin: $('stat-win'), statStreak: $('stat-streak'), statBest: $('stat-best'),
+    dist: $('dist'), sharePreview: $('share-preview'), btnCopy: $('btn-copy'), btnShare: $('btn-share'), nextIn: $('next-in'),
+    btnBoard: $('btn-board'), btnResZen: $('btn-res-zen'), btnResArchive: $('btn-res-archive'),
+    archList: $('arch-list'), archCount: $('arch-count'), archBack: $('arch-back'),
   };
 
   buildScenery();
+  buildSage();
+  initParallax();
 
   try {
     [data.games, data.parts] = await Promise.all([loadJSON('games.json'), loadJSON('parts.json')]);
@@ -1058,20 +1490,29 @@ async function boot() {
   els.form.addEventListener('submit', (e) => { e.preventDefault(); submitGuess(); });
   els.input.addEventListener('input', previewTyping);
   els.clue.addEventListener('click', pressClue);
-  els.next.addEventListener('click', () => { if (!state.busy) startZen(); });
-
-  els.btnDaily.addEventListener('click', () => {
-    if (state.busy || state.mode === 'daily') return;
-    startDaily();
+  els.next.addEventListener('click', () => { if (!state.busy) { startZen(); say('next'); } });
+  els.btnResults.addEventListener('click', () => showView('results'));
+  els.btnBoard.addEventListener('click', () => showView('game'));
+  els.btnCopy.addEventListener('click', copyResult);
+  els.btnShare.addEventListener('click', shareResult);
+  els.btnResZen.addEventListener('click', goZen);
+  els.btnResArchive.addEventListener('click', () => { showView('archive'); say('archive'); });
+  els.archBack.addEventListener('click', () => showView(backView()));
+  els.archList.addEventListener('click', (e) => {
+    const b = e.target.closest('.day');
+    if (b) pickArchiveDay(Number(b.dataset.n));
   });
-  els.btnZen.addEventListener('click', () => {
-    if (state.busy) return;
-    if (state.mode === 'zen' && !state.over) return setMessage('FINISH THIS WORD FIRST', 'warn');
-    startZen();
-  });
-  els.btnArchive.addEventListener('click', () => setMessage('ARCHIVE COMING SOON', 'warn'));
+  els.btnDaily.addEventListener('click', goDaily);
+  els.btnZen.addEventListener('click', goZen);
+  els.btnArchive.addEventListener('click', goArchive);
+  els.sfx.addEventListener('click', () => { sfx.toggle(); updateChips(); sfx.tick(); });
 
   startDaily();
+  setInterval(refreshDay, 1000);
+  setInterval(() => {
+    if (!document.hidden && !$('sage-quote').children.length && Math.random() < 0.5) say('idle');
+  }, 40000);
+  setTimeout(() => say('start'), 700);
 }
 
 if (typeof document !== 'undefined') boot();
