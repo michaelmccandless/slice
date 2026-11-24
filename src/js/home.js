@@ -265,12 +265,15 @@ const sfx = (() => {
   return {
     get on() { return on; },
     toggle() { on = !on; store.set(KEY.sfx, on); return on; },
-    slash() { const c = audio(); if (!c) return; noise(c, 0.16, 0.55, 7000, 800); tone(c, 1100, 140, 0.1, 'sawtooth', 0.025); },
+    // a soft, quick whoosh, a little ring off the steel, then a low thunk as the halves settle
+    slash() { const c = audio(); if (!c) return; noise(c, 0.13, 0.28, 6000, 1400); tone(c, 2400, 1500, 0.09, 'sine', 0.022, 0.02); tone(c, 190, 120, 0.1, 'triangle', 0.045, 0.07); },
     miss()  { const c = audio(); if (!c) return; tone(c, 180, 90, 0.09, 'triangle', 0.06); },
     bad()   { const c = audio(); if (!c) return; tone(c, 150, 110, 0.12, 'square', 0.035); },
     tick()  { const c = audio(); if (!c) return; tone(c, 880, 880, 0.04, 'square', 0.025); },
     win()   { const c = audio(); if (!c) return; [523, 659, 784, 1047].forEach((f, i) => tone(c, f, f, 0.18, 'triangle', 0.06, i * 0.09)); },
     lose()  { const c = audio(); if (!c) return; tone(c, 262, 131, 0.5, 'triangle', 0.06); },
+    mega()  { const c = audio(); if (!c) return; noise(c, 0.6, 0.8, 9000, 260); tone(c, 240, 40, 0.5, 'sawtooth', 0.07); },
+    sheathe() { const c = audio(); if (!c) return; tone(c, 1700, 950, 0.05, 'square', 0.03); tone(c, 760, 760, 0.05, 'square', 0.03, 0.08); },
   };
 })();
 
@@ -408,12 +411,13 @@ function updateSlots() {
   });
 }
 
-function flashSlots(partResults) {
+// A quick white pulse on the clue boxes that were just matched (.pulse, not .flash: .flash is the win overlay)
+function pulseSlots(partResults) {
   [...els.slots.children].forEach((el, i) => {
     if (partResults[i]) {
-      el.classList.remove('flash');
+      el.classList.remove('pulse');
       void el.offsetWidth;
-      el.classList.add('flash');
+      el.classList.add('pulse');
     }
   });
 }
@@ -465,80 +469,23 @@ function setActiveMode() {
 }
 
 /* ---------------------------------------------------------
-   The slash: a white, curved, pixel flipbook (5 frames, ~170ms).
-   Frame 0 is already the full-length cut, so it feels instant.
-   --------------------------------------------------------- */
-
-const SLASH = { size: 32, frames: 5, frameMs: 34 };
-
-function drawSlashFrame(ctx, f) {
-  const N = SLASH.size;
-  ctx.clearRect(0, 0, N, N);
-  const P0 = [28, 0], P1 = [6, 11], P2 = [10, 31];
-  const at = (t) => {
-    const u = 1 - t;
-    return [u * u * P0[0] + 2 * u * t * P1[0] + t * t * P2[0],
-            u * u * P0[1] + 2 * u * t * P1[1] + t * t * P2[1]];
-  };
-
-  const tails  = [0, 0, 0.14, 0.42, 1];
-  const widths = [4.4, 3.4, 2.4, 1.5, 0];
-  if (widths[f] > 0) {
-    [['rgba(255,255,255,.4)', 2], ['#ffffff', 0]].forEach(([color, extra]) => {
-      ctx.fillStyle = color;
-      for (let t = tails[f]; t <= 1; t += 0.008) {
-        const [x, y] = at(t);
-        const taper = Math.pow(Math.sin(Math.PI * Math.min(1, Math.max(0.06, t))), 0.7);
-        const w = Math.max(1, Math.round(widths[f] * taper)) + extra;
-        ctx.fillRect(Math.round(x - w / 2), Math.round(y - w / 2), w, w);
-      }
-    });
-  }
-  // white sparks thrown off the blade
-  if (f >= 1) {
-    ctx.fillStyle = '#fff';
-    for (let k = 0; k < 11; k++) {
-      if ((f + k) % 2) continue;
-      const [x, y] = at((k + 0.5) / 11);
-      const side = k % 2 ? 1 : -1, dist = f * 2.6 + (k % 3);
-      ctx.fillRect(Math.round(x + side * dist), Math.round(y + (k % 4) - 1.5), 1, 1);
-    }
-  }
-}
-
-// Plays the flipbook on a canvas centred at `x` (px, relative to the row).
-function playSlash(rowEl, x) {
-  return new Promise((resolve) => {
-    const canvas = document.createElement('canvas');
-    canvas.className = 'slash';
-    canvas.width = SLASH.size;
-    canvas.height = SLASH.size;
-    canvas.style.left = `${x}px`;
-    const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
-    rowEl.appendChild(canvas);
-
-    let f = 0;
-    drawSlashFrame(ctx, f);
-    const timer = setInterval(() => {
-      f += 1;
-      if (f >= SLASH.frames) {
-        clearInterval(timer);
-        canvas.remove();
-        resolve();
-        return;
-      }
-      drawSlashFrame(ctx, f);
-    }, SLASH.frameMs);
-  });
-}
-
-/* ---------------------------------------------------------
-   Reveal. No subword in the guess -> no animation at all.
-   Subword -> the slash lands instantly at the boundaries around
-   it, the word splits and lights up in the same beat.
+   Reveal + the slash.
+   No subword in the guess -> no animation at all.
+   Subword -> the word is cut along the edges of every part:
+     1. a white blade draws down each seam, left to right (CSS, on the
+        letter's ::after, so it always sits exactly in the gap)
+     2. the word springs open along the seams (margin overshoot + settle)
+        while a few sparks leave each seam
+     3. the lit letters colour in as a quick ripple outward from the
+        nearest seam, each hopping up for a beat
+   Nothing leaves the row: no shake, no full-row flash, no layout jump.
    Returns true when the guess contained a subword.
    --------------------------------------------------------- */
+
+const SLASH_MS = 400;        // how long the board is held while the cut plays
+const SLASH_STAGGER = 45;    // ms between one seam and the next
+const RIPPLE_START = 70;     // ms before the first letter lights up
+const RIPPLE_STEP = 22;      // ms per letter of distance from the seam
 
 async function revealRow(i, guess, result, win) {
   const rowEl = els.grid.children[i];
@@ -546,34 +493,37 @@ async function revealRow(i, guess, result, win) {
   rowEl.classList.add('done');
   const letters = [...rowEl.querySelectorAll('.ltr')];
   const states = win ? guess.split('').map(() => 'green') : result.letters;
-  const paint = () => letters.forEach((l, k) => { l.dataset.state = states[k] || 'miss'; });
+  const paint = (k) => { letters[k].dataset.state = states[k] || 'miss'; };
 
-  if (!states.some(Boolean)) { paint(); return false; }          // nothing found: no animation
+  if (!states.some(Boolean)) { letters.forEach((_, k) => paint(k)); return false; }   // nothing found: no animation
   const cuts = result.cuts;
-  if (!cuts.length || reducedMotion()) { paint(); return true; }  // e.g. the guess is exactly one part
-
-  const rowBox = rowEl.getBoundingClientRect();                    // measure before the split moves anything
-  const xs = cuts.map((c) => {
-    const a = letters[c - 1].getBoundingClientRect(), b = letters[c].getBoundingClientRect();
-    return (a.right + b.left) / 2 - rowBox.left;
-  });
+  if (!cuts.length || reducedMotion()) {                                              // e.g. the guess is exactly one part
+    cuts.forEach((c) => letters[c - 1].classList.add('cut-after'));
+    letters.forEach((_, k) => paint(k));
+    return true;
+  }
 
   sfx.slash();
-  const slashes = xs.map((x, n) => sleep(n * 45).then(() => playSlash(rowEl, x)));
-  await sleep(SLASH.frameMs);                                      // the first frame is the cut
+  letters.forEach((_, k) => { if (!states[k]) paint(k); });          // unlit letters settle straight away
 
-  cuts.forEach((c) => letters[c - 1].classList.add('cut-after'));
-  letters.forEach((l, k) => {
-    if (k < cuts[0]) l.classList.add('shove-l');
-    else if (k >= cuts[cuts.length - 1]) l.classList.add('shove-r');
+  cuts.forEach((c, n) => {                                            // seams: blade + gap spring + sparks
+    const l = letters[c - 1];
+    l.style.setProperty('--cd', `${n * SLASH_STAGGER}ms`);
+    l.classList.add('cut-after', 'open');
   });
-  paint();
-  rowEl.classList.remove('flash'); void rowEl.offsetWidth; rowEl.classList.add('flash');
-  els.app.classList.remove('hit'); void els.app.offsetWidth; els.app.classList.add('hit');
-  await Promise.all(slashes);
-  letters.forEach((l) => l.classList.remove('shove-l', 'shove-r'));
-  rowEl.classList.remove('flash');
-  els.app.classList.remove('hit');
+
+  letters.forEach((l, k) => {                                         // colour ripples out from the nearest seam
+    if (!states[k]) return;
+    const dist = Math.min(...cuts.map((c) => (k < c ? c - 1 - k : k - c)));
+    const delay = RIPPLE_START + Math.min(dist, 5) * RIPPLE_STEP;
+    setTimeout(() => {
+      paint(k);
+      l.classList.add('pop');
+      setTimeout(() => l.classList.remove('pop'), 90);
+    }, delay);
+  });
+
+  await sleep(SLASH_MS);
   return true;
 }
 
@@ -612,6 +562,7 @@ function finishRound(silent = false) {
 
   if (state.won) {
     sfx.win();
+    strike();
     const streak = state.mode === 'daily' && currentStreak() >= 3 && Math.random() < 0.6;
     say(state.guesses.length === 1 ? 'win1' : streak ? 'streak' : 'win');
   } else {
@@ -620,7 +571,7 @@ function finishRound(silent = false) {
   }
   if (state.mode !== 'zen') {
     const round = state.round;
-    setTimeout(() => { if (state.round === round && state.over && state.view === 'game') showView('results'); }, 900);
+    setTimeout(() => { if (state.round === round && state.over && state.view === 'game') showView('results'); }, state.won ? 1900 : 900);
   }
 }
 
@@ -658,7 +609,7 @@ async function submitGuess() {
 
   applyResult(result);
   checkEnd(guess);
-  flashSlots(win ? state.parts.map(() => 'green') : result.partResults);
+  pulseSlots(win ? state.parts.map(() => 'green') : result.partResults);
   save();
   state.busy = false;
 
@@ -1116,7 +1067,7 @@ function stoneLantern() {
   p.rect(3, 23, 8, 5, s); p.rect(3, 23, 8, 1, hi); p.rect(10, 23, 1, 5, dk);
   p.rect(6, 15, 2, 8, s); p.rect(6, 15, 1, 8, hi);
   p.rect(3, 9, 8, 6, s); p.rect(3, 9, 8, 1, hi); p.rect(10, 9, 1, 6, dk);
-  p.rect(5, 10, 4, 4, '#2a2630'); p.rect(6, 11, 2, 2, '#3c3844');
+  p.rect(5, 10, 4, 4, '#ffcf70'); p.rect(6, 11, 2, 2, '#fff3c4');
   p.rect(0, 6, 14, 3, s); p.rect(0, 6, 14, 1, hi); p.rect(13, 6, 1, 3, dk);
   p.rect(3, 3, 8, 3, s); p.rect(6, 0, 2, 3, hi);
   return p;
@@ -1129,21 +1080,6 @@ function tuft(seed, tones) {
     const bx = 2 + b * 2 + Math.floor(r() * 2), len = 5 + Math.floor(r() * 8), lean = (r() - 0.5) * 7;
     p.line(bx, 13, bx + lean, 13 - len, 1, tones[b % tones.length]);
   }
-  return p;
-}
-
-function boulder(seed, w, h) {
-  const r = rng(seed), p = new Pix(w, h);
-  const tones = ['#2a2736', '#3a3648', '#4b4660', '#5f5a76'];
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const dx = (x - w / 2 + 0.5) / (w / 2), dy = (y - h + 1) / h;
-      if (dx * dx + dy * dy * 1.0 > 1) continue;
-      const light = -dx * 0.5 - (y / h) * 0.2 + 0.5;
-      p.set(x, y, tones[clamp(Math.round(light * 2.6 + (r() - 0.5) * 0.8), 0, 3)]);
-    }
-  }
-  for (let x = 2; x < w - 2; x++) if (r() < 0.8) p.set(x, Math.round(h * 0.28 + Math.sin(x) * 0.7), '#3f7a4e'); // moss cap
   return p;
 }
 
@@ -1163,7 +1099,6 @@ function cliff(seed) {
   }
   return { p, n0, n1, notchTop };
 }
-
 
 /* ---------- Canopy: hanging bamboo-leaf blades (tiles seamlessly sideways) ---------- */
 function canopyTile(seed, W = 96, H = 50) {
@@ -1211,14 +1146,99 @@ function stairs() {
   return p;
 }
 
-/* ---------- The old sage (meditating, sipping tea). Two frames: idle + sip ---------- */
-function sageFrame(sip) {
-  const p = new Pix(32, 36);
+/* ---------- Solid ground: a tile whose top edge repeats seamlessly ---------- */
+function groundTile(seed) {
+  const W = 32, H = 16, r = rng(seed), p = new Pix(W, H);
+  const dirt = '#4a3a28', dirtHi = '#6a5438', dirtDk = '#33281a', grass = '#5aa04c', grass2 = '#3d7a3a';
+  p.rect(0, 0, W, H, dirt);
+  for (let x = 0; x < W; x++) {
+    const h = 2 + Math.round(Math.sin((x / W) * Math.PI * 4 + seed) * 1.4);
+    p.rect(x, 0, 1, h, null);
+    p.set(x, h, grass); p.set(x, h + 1, grass); p.set(x, h + 2, grass2);
+    if (r() < 0.35) p.set(x, h + 3, grass2);
+  }
+  for (let n = 0; n < 26; n++) p.set(Math.floor(r() * W), 6 + Math.floor(r() * 10), r() > 0.5 ? dirtHi : dirtDk);
+  for (let n = 0; n < 4; n++) p.rect(Math.floor(r() * (W - 3)), 8 + Math.floor(r() * 7), 3, 2, '#7d788c');   // buried pebbles
+  return p;
+}
+
+/* ---------- Rocks (dome, lit from the top left, mossy on top) ---------- */
+function rock(seed, w, h) {
+  const r = rng(seed), p = new Pix(w, h);
+  const base = '#6c677a', hi = '#9a95ab', dk = '#47435a', dk2 = '#38344a', moss = '#4a8a58', moss2 = '#62a86c';
+  const hw = (y) => Math.max(2, Math.round((w / 2) * Math.sqrt(1 - Math.pow((h - 1 - y) / h, 2)) * 1.02 + (r() - 0.5) * 0.6));
+  for (let y = 0; y < h; y++) {
+    const half = hw(y), x0 = Math.round(w / 2 - half), x1 = Math.round(w / 2 + half) - 1;
+    for (let x = x0; x <= x1; x++) {
+      let c = base;
+      if (y <= 1 || x - x0 <= 1) c = hi;
+      if (x1 - x <= 1 || y >= h - 2) c = dk;
+      if (y >= h - 1) c = dk2;
+      p.set(x, y, c);
+    }
+  }
+  for (let n = 0; n < Math.floor(w / 4); n++) {                     // cracks
+    const x = 2 + Math.floor(r() * (w - 4)), y = 2 + Math.floor(r() * (h - 4));
+    p.rect(x, y, 1, 2, dk);
+  }
+  for (let x = 2; x < w - 2; x++) if (r() < 0.5) { p.set(x, 1, moss); if (r() < 0.4) p.set(x, 2, moss2); }
+  return p;
+}
+
+/* ---------- Fern ---------- */
+function fern(seed, tones) {
+  const r = rng(seed), p = new Pix(22, 13), n = 6;
+  for (let i = 0; i < n; i++) {
+    const ang = -1.3 + (i / (n - 1)) * 2.6, len = 7 + r() * 5;
+    for (let s = 0; s <= len; s++) {
+      const t = s / len, x = 11 + Math.sin(ang) * s * 1.1, y = 12 - Math.cos(ang) * s * 0.85 + t * t * 3 * Math.abs(Math.sin(ang));
+      p.set(x, y, tones[t > 0.65 ? 1 : i % 2 ? 0 : 2]);
+      if (s > 2 && s % 2 === 0) { p.set(x + (ang < 0 ? -1 : 1), y + 1, tones[2]); p.set(x, y - 1, tones[1]); }
+    }
+  }
+  return p;
+}
+
+/* ---------- Stone fox (kitsune) guardian ---------- */
+function kitsune() {
+  const p = new Pix(16, 22);
+  const s = '#a9a4b8', hi = '#c7c2d6', dk = '#807b93', base = '#6b6678', red = '#c4413a', redHi = '#e05a50', dark = '#2a2630';
+  p.rect(1, 19, 14, 3, base); p.rect(1, 19, 14, 1, hi); p.rect(13, 19, 2, 3, dk);
+  p.rect(4, 9, 8, 10, s); p.rect(4, 9, 1, 10, hi); p.rect(10, 9, 2, 10, dk);
+  p.rect(12, 13, 3, 6, s); p.rect(13, 10, 2, 4, s); p.rect(14, 9, 1, 2, hi);            // tail
+  p.rect(4, 3, 8, 7, hi); p.rect(10, 3, 2, 7, s);                                       // head
+  p.rect(4, 0, 2, 4, hi); p.rect(10, 0, 2, 4, s); p.set(5, 1, dk); p.set(10, 1, dk);   // ears
+  p.rect(6, 6, 1, 1, dark); p.rect(9, 6, 1, 1, dark); p.rect(7, 8, 2, 1, dk);          // eyes + nose
+  p.rect(5, 10, 6, 3, red); p.rect(5, 10, 6, 1, redHi); p.set(8, 13, red);              // red bib
+  return p;
+}
+
+/* ---------- Hanging paper lantern (chochin) ---------- */
+function chochin() {
+  const p = new Pix(12, 18);
+  const cap = '#2a2230', red = '#e8584a', hi = '#ff9a6a', dk = '#b03030', rib = '#8a2222';
+  p.rect(3, 0, 6, 2, cap);
+  for (let y = 2; y <= 13; y++) {
+    const half = Math.round(5 - Math.pow((y - 7.5) / 6, 2) * 2.2), x0 = 6 - half, w = half * 2;
+    p.rect(x0, y, w, 1, red);
+    p.set(x0, y, hi); p.set(x0 + 1, y, hi); p.set(x0 + w - 1, y, dk);
+    if (y === 4 || y === 7 || y === 10) p.rect(x0, y, w, 1, rib);
+  }
+  p.rect(5, 5, 2, 2, '#ffd88a'); p.rect(5, 8, 2, 2, '#ffd88a');
+  p.rect(3, 14, 6, 2, cap); p.rect(5, 16, 2, 2, '#e8c46a');
+  return p;
+}
+
+/* ---------- The old sage. Modes: idle, sip, then the katana strike: s0 ready, s1 draw, s2 slash, s3 follow-through, s4 sheathing, s5 sheathed ---------- */
+function sageFrame(mode) {
+  const p = new Pix(46, 36);
   const skin = '#e2b48a', skinDk = '#c08a62', skinHi = '#f1cfae';
   const robe = '#b8703a', robeHi = '#d38d4a', robeDk = '#8a4f26', sash = '#7a3b2c', under = '#ecdcb8';
   const white = '#f4f2ec', whiteDk = '#cfcbc2', dark = '#2e2119';
   const wood = '#6b4a32', woodDk = '#4a3222', woodHi = '#8a6347';
   const cupC = '#efe6d6', cupDk = '#b9ae9a', tea = '#8a5a2a';
+  const steel = '#f6f8ff', steelDk = '#aeb6cf', saya = '#2a2230', sayaHi = '#4a3f58', tsuka = '#d9d2c0', gold = '#e8c46a';
+  const awake = mode !== 'idle' && mode !== 'sip' && mode !== 's5';
 
   p.rect(2, 31, 28, 5, woodDk); p.rect(3, 30, 26, 2, wood); p.rect(3, 30, 26, 1, woodHi);          // stone seat
   p.rect(3, 26, 26, 5, robe); p.rect(3, 26, 26, 1, robeHi); p.rect(3, 30, 26, 1, robeDk);          // crossed legs
@@ -1231,43 +1251,151 @@ function sageFrame(sip) {
   p.set(14, 3, skinHi); p.set(15, 3, skinHi);
   p.rect(14, 0, 4, 2, white); p.rect(10, 4, 1, 3, white); p.rect(21, 4, 1, 3, white);              // topknot + side hair
   p.rect(12, 5, 3, 1, white); p.rect(17, 5, 3, 1, white);                                           // bushy brows
-  p.rect(12, 7, 3, 1, dark); p.rect(17, 7, 3, 1, dark);                                             // closed eyes
+  if (awake) { p.rect(12, 7, 3, 2, white); p.rect(17, 7, 3, 2, white); p.set(13, 7, dark); p.set(13, 8, dark); p.set(18, 7, dark); p.set(18, 8, dark); }
+  else { p.rect(12, 7, 3, 1, dark); p.rect(17, 7, 3, 1, dark); }                                    // closed eyes
   p.rect(15, 8, 2, 2, skinDk);                                                                      // nose
   p.rect(12, 10, 8, 1, white); p.rect(11, 11, 10, 3, white); p.rect(12, 14, 8, 3, white);           // moustache + long beard
   p.rect(13, 17, 6, 3, white); p.rect(14, 20, 4, 2, white);
   p.rect(20, 11, 1, 3, whiteDk); p.rect(19, 14, 1, 3, whiteDk); p.rect(18, 17, 1, 3, whiteDk); p.rect(17, 20, 1, 2, whiteDk);
 
-  if (!sip) {                                                                                       // cup resting in both hands
+  const scabbard = (x0, y0, x1, y1) => { p.line(x0, y0, x1, y1, 2, saya); p.line(x0, y0 - 1, x1, y1 - 1, 1, sayaHi); p.set(x1, y1, gold); };
+  const hand = (x, y) => p.rect(x, y, 3, 3, skin);
+
+  if (mode === 'idle') {                                                                            // cup resting in both hands
     p.rect(8, 20, 16, 4, robe); p.rect(8, 20, 16, 1, robeHi); p.rect(8, 23, 16, 1, robeDk);
     p.rect(13, 20, 6, 3, skin);
     p.rect(14, 17, 5, 4, cupC); p.rect(14, 20, 5, 1, cupDk); p.rect(15, 17, 3, 1, tea);
-  } else {                                                                                          // cup raised to the lips
+  } else if (mode === 'sip') {                                                                      // cup raised to the lips
     p.rect(8, 15, 3, 7, robe); p.rect(21, 15, 3, 7, robe);
     p.rect(11, 13, 3, 3, skin); p.rect(18, 13, 3, 3, skin);
     p.rect(13, 11, 6, 4, cupC); p.rect(13, 14, 6, 1, cupDk); p.rect(14, 11, 4, 1, tea);
+  } else if (mode === 's0' || mode === 's5') {                                                      // katana across the lap, hand on the grip
+    p.rect(8, 20, 16, 4, robe); p.rect(8, 20, 16, 1, robeHi); p.rect(8, 23, 16, 1, robeDk);
+    scabbard(4, 25, 25, 23); p.rect(24, 21, 6, 2, tsuka); p.rect(24, 21, 1, 2, gold); hand(21, 20);
+  } else if (mode === 's1') {                                                                       // draw: blade sweeping up and out
+    p.rect(8, 20, 16, 4, robe); scabbard(4, 26, 20, 25);
+    p.rect(21, 15, 3, 7, robe); hand(22, 14);
+    p.line(24, 14, 45, 0, 2, steel); p.line(24, 15, 45, 1, 1, steelDk); p.rect(22, 15, 3, 2, tsuka);
+  } else if (mode === 's2') {                                                                       // the cut: blade straight out
+    p.rect(8, 20, 16, 4, robe); scabbard(4, 26, 20, 25);
+    p.rect(21, 18, 4, 3, robe); hand(24, 18);
+    p.line(26, 19, 45, 19, 2, steel); p.line(26, 20, 45, 20, 1, steelDk); p.rect(25, 18, 2, 3, tsuka);
+  } else if (mode === 's3') {                                                                       // follow-through, blade low
+    p.rect(8, 20, 16, 4, robe); scabbard(4, 26, 20, 25);
+    p.rect(21, 20, 4, 3, robe); hand(24, 21);
+    p.line(26, 23, 45, 33, 2, steel); p.line(26, 24, 45, 34, 1, steelDk); p.rect(25, 22, 2, 3, tsuka);
+  } else if (mode === 's4') {                                                                       // sheathing: blade slides home
+    p.rect(8, 20, 16, 4, robe); scabbard(4, 25, 25, 23);
+    p.line(24, 22, 33, 22, 2, steel); p.rect(26, 21, 5, 3, tsuka); hand(22, 20);
   }
   return p;
 }
 
 function buildSage() {
   const steam = (l, b, d, sx) => `<i class="steam" style="left:${l}px;bottom:${b}px;--d:${d}s;--sx:${sx}px"></i>`;
+  const strike = ['s0', 's1', 's2', 's3', 's4', 's5'].map((m) => `<div class="sage-frame f-s f-${m}">${sageFrame(m).svg(3)}</div>`).join('');
   $('sage-body').innerHTML =
-    `<div class="sage-frame f-idle">${sageFrame(false).svg(3)}${steam(46, 58, 0, 3)}${steam(52, 58, 1.2, -3)}${steam(49, 58, 0.6, 2)}</div>` +
-    `<div class="sage-frame f-sip">${sageFrame(true).svg(3)}${steam(60, 74, 0, 4)}${steam(55, 74, 1.2, -2)}</div>`;
+    `<div class="sage-frame f-idle">${sageFrame('idle').svg(3)}${steam(46, 58, 0, 3)}${steam(52, 58, 1.2, -3)}${steam(49, 58, 0.6, 2)}</div>` +
+    `<div class="sage-frame f-sip">${sageFrame('sip').svg(3)}${steam(60, 74, 0, 4)}${steam(55, 74, 1.2, -2)}</div>` + strike;
+}
+
+/* =========================================================
+   The strike: on a win the sage draws, cuts the whole screen, sheathes.
+   Slash flipbook + white flash + quake + a gust that bends the bamboo.
+   ========================================================= */
+
+let striking = false;
+
+function setStrike(n) {
+  const el = $('sage');
+  if (n == null) { el.classList.remove('striking'); delete el.dataset.s; return; }
+  el.classList.add('striking');
+  el.dataset.s = n;
+}
+
+function restartClass(el, cls, ms) {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  if (ms) setTimeout(() => el.classList.remove(cls), ms);
+}
+
+function megaSlash() {
+  const CELL = 6, F = 9;
+  const cw = Math.ceil(innerWidth / CELL), ch = Math.ceil((innerHeight * 0.7) / CELL);
+  const cv = document.createElement('canvas');
+  cv.width = cw; cv.height = ch; cv.className = 'mega';
+  cv.style.height = ch * CELL + 'px';
+  $('fx').appendChild(cv);
+  const ctx = cv.getContext('2d');
+  const curve = (s) => ch * (0.9 - 0.62 * s) + Math.sin(s * Math.PI) * ch * 0.16;           // low left, sweeping up and right
+  const draw = (f) => {
+    ctx.clearRect(0, 0, cw, ch);
+    const head = Math.min(1, (f + 1) / (F - 3)), tail = Math.max(0, head - 0.6), fade = f >= F - 3 ? (F - f) / 3 : 1;
+    for (let c = Math.floor(tail * cw); c <= Math.floor(head * cw); c++) {
+      const s = c / cw, u = (s - tail) / Math.max(0.001, head - tail);
+      const th = Math.max(1, Math.round(Math.sin(Math.PI * Math.min(1, Math.max(0, u))) * 9 * fade));
+      const y = Math.round(curve(s));
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(c, y - Math.floor(th / 2), 1, th);
+      ctx.fillStyle = 'rgba(255,214,232,.8)';
+      ctx.fillRect(c, y - Math.floor(th / 2) - 1, 1, 1);
+      ctx.fillRect(c, y + Math.ceil(th / 2), 1, 1);
+    }
+  };
+  let f = 0;
+  draw(0);
+  const iv = setInterval(() => { f++; if (f >= F) { clearInterval(iv); cv.remove(); return; } draw(f); }, 45);
+}
+
+function windBurst() {
+  const fx = $('fx'), cols = ['#4f9c53', '#347843', '#6bb86a', '#d9739a', '#f2a3c1'];
+  for (let i = 0; i < 34; i++) {
+    const leaf = i < 24, el = document.createElement('i');
+    el.className = leaf ? 'blow' : 'windline';
+    const w = leaf ? 6 + Math.round(Math.random() * 4) : 50 + Math.round(Math.random() * 90);
+    el.style.cssText = `top:${(18 + Math.random() * 78).toFixed(1)}%;width:${w}px;height:${leaf ? 3 : 2}px;` +
+      `--c:${leaf ? cols[i % cols.length] : 'rgba(255,255,255,.7)'};--dur:${(0.8 + Math.random() * 0.8).toFixed(2)}s;` +
+      `--dl:${(Math.random() * 0.4).toFixed(2)}s;--dy:${Math.round(-60 + Math.random() * 120)}px`;
+    fx.appendChild(el);
+    setTimeout(() => el.remove(), 2200);
+  }
+}
+
+function strike() {
+  if (reducedMotion() || striking) return;
+  striking = true;
+  const T = (ms, fn) => setTimeout(fn, ms);
+  setStrike(0);
+  T(260, () => setStrike(1));
+  T(330, () => {
+    setStrike(2);
+    megaSlash();
+    windBurst();
+    sfx.mega();
+    restartClass($('flash'), 'on', 600);
+    restartClass(document.documentElement, 'quake', 700);
+    restartClass(document.querySelector('.scenery'), 'gust', 1900);
+  });
+  T(450, () => setStrike(3));
+  T(900, () => { setStrike(4); sfx.sheathe(); });
+  T(1150, () => setStrike(5));
+  T(1650, () => { setStrike(null); striking = false; });
 }
 
 /* =========================================================
    Scenery: scene assembly (a bamboo forest at midday)
    Back -> front: far haze bamboo + distant temples, light shafts,
-   stairs / torii path + mid bamboo, river + waterfall + rocks,
-   cherry trees, near bamboo, foreground bank, canopy, particles.
+   stairs / torii path + mid bamboo, solid ground + river + waterfall + rocks,
+   cherry trees, near bamboo, foreground bank, canopy + lanterns, particles.
    The tallest bamboo runs off the top and the canopy closes it,
    so no sky (or sun) is ever visible.
    ========================================================= */
 
-const FAR_BANK = 128;                 // where the far bank meets the river (px from the bottom)
-const RIVER_Y = 40, RIVER_H = 92;     // the river's band
-const NEAR_BANK = 40;                 // foreground bank height
+const FAR_BANK = 148;                 // top of the far bank (px from the bottom)
+const RIVER_Y = 84, RIVER_H = 64;     // the river's band (left part of the scene only)
+const NEAR_BANK = 84;                 // foreground bank height
+const RIVER_W = 54;                   // % of the width covered by the river; solid ground takes the rest
 
 function buildScenery() {
   const r = rng(20261121);
@@ -1277,19 +1405,24 @@ function buildScenery() {
   const uri = (pix, scale) =>
     'data:image/svg+xml;utf8,' + encodeURIComponent(pix.svg(scale).replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" '));
   const haze = 'filter:brightness(.62) saturate(.6);opacity:.8';
+  /* a sprite with a flickering glow centred on (gx, gy) sprite pixels */
+  const lit = (id, pix, S, pos, gx, gy, gs, delay, extra = '') =>
+    add(id, `<div class="prop" style="${pos};width:${pix.w * S}px;height:${pix.h * S}px;${extra}">` +
+      `<div class="glow" style="left:${gx * S}px;top:${gy * S}px;--gs:${gs}px;--d:-${delay}s"></div>` +
+      pix.svg(S, 'position:absolute;left:0;top:0') + `</div>`);
 
   const stalks = (id, count, cls, wRange, hRange, seg, leaves, bottom) => {
     let html = '';
     for (let i = 0; i < count; i++) {
-      const w = Math.round(between(...wRange) / 2) * 2;
+      const w = Math.round(between(...wRange) / 2) * 2, pos = (i + r() * 0.9) / count;
       let kids = '';
       for (let k = 0; k < leaves; k++) {
         const side = r() > 0.5;
         kids += `<div class="leaf${side ? '' : ' l'}" style="top:${(8 + r() * 70).toFixed(0)}%;${side ? 'left:100%' : 'right:100%'}"></div>`;
       }
-      html += `<div class="stalk ${cls}" style="left:${(((i + r() * 0.9) / count) * 100).toFixed(2)}%;width:${w}px;` +
+      html += `<div class="stalk ${cls}" style="left:${(pos * 100).toFixed(2)}%;width:${w}px;` +
         `height:${between(...hRange).toFixed(1)}vh;--b:${bottom}px;--seg:${seg + Math.round(r() * 3) * 8}px;` +
-        `--dur:${between(4, 8).toFixed(1)}s;--delay:-${between(0, 6).toFixed(1)}s">${kids}</div>`;
+        `--dur:${between(4, 8).toFixed(1)}s;--delay:-${between(0, 6).toFixed(1)}s;--gx:${(pos * 0.7 + r() * 0.12).toFixed(2)}s">${kids}</div>`;
     }
     add(id, html);
   };
@@ -1299,6 +1432,7 @@ function buildScenery() {
     `<div style="position:absolute;left:${left};bottom:${bottom}px;width:${w}px;height:10px;background:#3b4a45;box-shadow:inset 0 3px 0 #587265"></div>`);
   terrace('21%', FAR_BANK + 56, 200); sprite('L-back', shrine(), 2, `left:22%;bottom:${FAR_BANK + 64}px`, haze);
   terrace('55%', FAR_BANK + 96, 150); sprite('L-back', pagoda(5), 2, `left:57%;bottom:${FAR_BANK + 104}px`, haze);
+  terrace('2%', FAR_BANK + 20, 120); sprite('L-back', stoneLantern(), 2, `left:4%;bottom:${FAR_BANK + 30}px`, haze);
   stalks('L-back', 84, 'stalk-far', [6, 12], [95, 125], 36, 0, FAR_BANK - 26);
   add('L-back', `<div class="mist" style="bottom:${FAR_BANK - 40}px;height:58vh"></div>`);
 
@@ -1321,39 +1455,57 @@ function buildScenery() {
     { pix: torii(), S: 2, y: 138, extra: 'filter:brightness(.76)' },
     { pix: shrine(), S: 2, y: 212, extra: 'filter:brightness(.66)' },
   ]);
-  sprite('L-mid', stoneLantern(), 3, `right:calc(5% + 190px);bottom:${FAR_BANK - 6}px`);
-  sprite('L-mid', stoneLantern(), 3, `right:calc(5% - 40px);bottom:${FAR_BANK - 6}px`);
 
-  /* ----- river, waterfall, stepping stones, bank rocks ----- */
+  /* ----- solid ground on the right, river on the left ----- */
+  const gA = uri(groundTile(3), 4);
+  add('L-water',
+    `<div class="ground" style="width:${100 - RIVER_W + 2}%;bottom:-60px;height:${FAR_BANK + 60 - 6}px;` +
+    `background-image:url('${gA}'),none"></div>`);
   const tileA = uri(riverTile(31, '#78bcc2', '#1f5560'), 4), tileB = uri(riverTile(47, '#a4d6da', '#2a6672'), 4);
   add('L-water',
-    `<div class="river" style="bottom:${RIVER_Y}px;height:${RIVER_H}px">` +
+    `<div class="river" style="bottom:${RIVER_Y}px;height:${RIVER_H}px;width:${RIVER_W}%">` +
       `<div class="flow" style="background-image:url('${tileA}');background-size:128px 48px;--dur:7s;--tw:128px"></div>` +
       `<div class="flow" style="background-image:url('${tileB}');background-size:128px 48px;background-position:40px 20px;--dur:11s;--tw:128px;opacity:.65"></div>` +
     `</div>`);
+  [[10, 14], [23, 30], [38, 20], [46, 40]].forEach(([left, off], i) =>                    // ripples
+    add('L-water', `<div class="ripple" style="left:${left}%;bottom:${RIVER_Y + off}px;--d:-${i * 0.8}s"></div>`));
 
   const waterfall = (leftCss, S, seed, extra = '') => {
     const c = cliff(seed), w = c.p.w * S, h = c.p.h * S;
     const fx = (c.n0 + 1) * S, fw = (c.n1 - c.n0 - 1) * S, ft = c.notchTop * S;
     add('L-water',
-      `<div class="prop" style="left:${leftCss};bottom:${RIVER_Y + 22}px;width:${w}px;height:${h}px;${extra}">` +
+      `<div class="prop" style="left:${leftCss};bottom:${RIVER_Y + 14}px;width:${w}px;height:${h}px;${extra}">` +
         c.p.svg(S, 'position:absolute;left:0;top:0') +
         `<div class="fall" style="left:${fx}px;top:${ft}px;width:${fw}px;height:${h - ft - 2 * S}px"></div>` +
         `<div class="fall-mist" style="left:${fx - 5 * S}px;bottom:${S}px;width:${fw + 10 * S}px"></div>` +
       `</div>`);
   };
-  waterfall('6%', 3, 5);
+  waterfall('5%', 3, 5);
 
-  [[36, 3, 8], [44, 2, 6], [52, 3, 5], [60, 2, 7]].forEach(([left, S, seed], i) =>   // stepping stones
-    sprite('L-water', boulder(60 + i, 12 + (i % 2) * 4, 7 + (i % 3) * 2), S, `left:${left}%;bottom:${RIVER_Y + 14 + (i % 3) * 12}px`));
-  [[3, 4], [16, 3], [27, 3], [71, 3], [80, 4], [94, 3]].forEach(([left, S], i) =>     // far-bank rocks
-    sprite('L-water', boulder(70 + i, 14 + (i % 3) * 4, 9 + (i % 2) * 4), S, `left:${left}%;bottom:${RIVER_Y + RIVER_H - 8}px`));
-  sprite('L-water', torii(), 3, `right:25%;bottom:${RIVER_Y + 16}px`);                // torii standing in the river
+  [[30, 3, 8], [40, 2, 6], [47, 3, 5]].forEach(([left, S, seed], i) =>                     // stepping stones
+    sprite('L-water', rock(60 + i, 12 + (i % 2) * 4, 7 + (i % 3) * 2), S, `left:${left}%;bottom:${RIVER_Y + 12 + (i % 3) * 12}px`));
+  [[2, 4], [15, 3], [24, 3]].forEach(([left, S], i) =>                                      // far-bank rocks (left)
+    sprite('L-water', rock(70 + i, 14 + (i % 3) * 4, 9 + (i % 2) * 4), S, `left:${left}%;bottom:${RIVER_Y + RIVER_H - 8}px`));
+  [[RIVER_W - 3, 4, 90], [RIVER_W + 1, 3, 91], [RIVER_W - 7, 2, 92]].forEach(([left, S, seed], i) =>   // the river's bank
+    sprite('L-water', rock(seed, 18 + i * 3, 10 + i * 2), S, `left:${left}%;bottom:${RIVER_Y + 6 + i * 8}px`));
+  sprite('L-water', torii(), 3, `left:22%;bottom:${RIVER_Y + 14}px`);                      // torii standing in the river
+
+  /* ground details: rocks, a guardian fox, glowing stone lanterns */
+  [[63, 3, 95], [76, 4, 96], [88, 3, 97], [95, 2, 98]].forEach(([left, S, seed], i) =>
+    sprite('L-water', rock(seed, 14 + (i % 3) * 4, 9 + (i % 2) * 4), S, `left:${left}%;bottom:${FAR_BANK - 8 - (i % 2) * 14}px`));
+  lit('L-water', stoneLantern(), 3, `right:calc(5% + 188px);bottom:${FAR_BANK - 6}px`, 7, 12, 150, 0.4);
+  lit('L-water', stoneLantern(), 3, `right:calc(5% - 38px);bottom:${FAR_BANK - 6}px`, 7, 12, 150, 1.7);
+  sprite('L-water', kitsune(), 3, `right:calc(5% + 236px);bottom:${FAR_BANK - 6}px`);
+  sprite('L-water', kitsune(), 3, `right:calc(5% - 86px);bottom:${FAR_BANK - 6}px`, 'transform:scaleX(-1)');
+  const fernTones = [['#2e7a46', '#4aa862', '#245f38'], ['#3a8a4a', '#62b85a', '#2a6a3a']];
+  for (let i = 0; i < 14; i++)
+    sprite('L-water', fern(200 + i, fernTones[i % 2]), r() > 0.5 ? 3 : 2,
+      `left:${between(RIVER_W - 2, 97).toFixed(1)}%;bottom:${FAR_BANK - 14 + Math.round(r() * 22)}px`);
 
   /* ----- cherry trees (the sakura accent) ----- */
-  sprite('L-trees', cherryTree(14), 4, `left:-4%;bottom:${RIVER_Y + RIVER_H - 6}px`);
-  sprite('L-trees', cherryTree(8), 3, `left:19%;bottom:${RIVER_Y + RIVER_H - 6}px`, 'filter:brightness(.85)');
-  sprite('L-trees', cherryTree(19), 3, `right:27%;bottom:${RIVER_Y + RIVER_H - 6}px`, 'filter:brightness(.8)');
+  sprite('L-trees', cherryTree(14), 4, `left:-4%;bottom:${FAR_BANK - 6}px`);
+  sprite('L-trees', cherryTree(8), 3, `left:19%;bottom:${FAR_BANK - 6}px`, 'filter:brightness(.85)');
+  sprite('L-trees', cherryTree(19), 3, `right:27%;bottom:${FAR_BANK - 4}px`, 'filter:brightness(.8)');
 
   /* ----- near bamboo ----- */
   stalks('L-near', 17, 'stalk-near', [22, 34], [90, 125], 80, 3, NEAR_BANK - 8);
@@ -1362,23 +1514,29 @@ function buildScenery() {
   add('L-fore',
     `<div style="position:absolute;left:0;right:0;bottom:-60px;height:${NEAR_BANK + 60}px;background:#1d4a30;` +
     `box-shadow:inset 0 3px 0 #3a7a4c, inset 0 6px 0 #2b5f3e"></div>`);
-  for (let i = 0; i < 9; i++) {                                                         // path stones
+  for (let i = 0; i < 9; i++) {                                                           // path stones
     add('L-fore', `<div style="position:absolute;left:${(34 + i * 3.2 + r()).toFixed(1)}%;bottom:${6 + Math.round(r() * 12)}px;` +
       `width:${16 + Math.round(r() * 10)}px;height:6px;background:#6a6578;box-shadow:inset 0 2px 0 #8a849a"></div>`);
   }
   [[12, 4], [47, 3], [78, 4], [93, 3]].forEach(([left, S], i) =>
-    sprite('L-fore', boulder(40 + i, 14 + (i % 3) * 4, 10 + (i % 2) * 4), S, `left:${left}%;bottom:${NEAR_BANK - 14}px`));
+    sprite('L-fore', rock(40 + i, 14 + (i % 3) * 4, 10 + (i % 2) * 4), S, `left:${left}%;bottom:${NEAR_BANK - 14}px`));
   const tones = [['#2e7a46', '#3d9a5a', '#245f38'], ['#4a8a3a', '#62a84c', '#386b2e'], ['#2a6a50', '#3a8a68', '#1f523e']];
-  for (let i = 0; i < 46; i++) {
+  for (let i = 0; i < 40; i++)
     sprite('L-fore', tuft(100 + i, tones[i % 3]), r() > 0.5 ? 3 : 2,
       `left:${between(0, 98).toFixed(1)}%;bottom:${NEAR_BANK - 14 + Math.round(r() * 10)}px`);
-  }
+  for (let i = 0; i < 9; i++)
+    sprite('L-fore', fern(300 + i, fernTones[i % 2]), 4, `left:${(4 + i * 11 + r() * 5).toFixed(1)}%;bottom:${NEAR_BANK - 16 + Math.round(r() * 8)}px`);
 
-  /* ----- canopy: closes the top so no sky shows ----- */
+  /* ----- canopy: closes the top so no sky shows, with glowing paper lanterns hanging under it ----- */
   [41, 42, 43, 41, 42, 43].forEach((seed, i) =>
     sprite('L-canopy', canopyTile(seed), 4, `left:${i * 384}px;top:-10px`, i % 2 ? 'transform:scaleX(-1)' : ''));
   [52, 53, 54, 52, 53, 54].forEach((seed, i) =>
     sprite('L-canopy', canopyTile(seed, 96, 36), 3, `left:${i * 288 - 40}px;top:-14px`, i % 2 ? 'transform:scaleX(-1)' : ''));
+  [[9, 70], [27, 38], [52, 90], [73, 52], [91, 78]].forEach(([left, drop], i) => {
+    const top = 150 + drop;
+    add('L-canopy', `<i class="string" style="left:calc(${left}% + 18px);top:120px;height:${top - 120}px"></i>`);
+    lit('L-canopy', chochin(), 3, `left:${left}%;top:${top}px`, 6, 8, 130, i * 0.9);
+  });
 
   /* ----- sakura petals + floating white pixels (pollen in the light) ----- */
   let petals = '';
@@ -1398,10 +1556,12 @@ function buildScenery() {
   add('motes', motes);
 }
 
-/* ---------- Mouse parallax: each layer drifts by its own depth ---------- */
+/* ---------- Mouse parallax: each layer drifts by its own depth (the sage is the nearest layer of all) ---------- */
+const PARALLAX = 0.38;
+
 function initParallax() {
   if (reducedMotion()) return;
-  const layers = [...document.querySelectorAll('.layer[data-depth]')].map((el) => ({ el, d: Number(el.dataset.depth) }));
+  const layers = [...document.querySelectorAll('[data-depth]')].map((el) => ({ el, d: Number(el.dataset.depth) * PARALLAX }));
   let tx = 0, ty = 0, x = 0, y = 0, raf = 0;
   const tick = () => {
     x += (tx - x) * 0.07;

@@ -135,10 +135,16 @@
     </main>
 
     <!-- The old tea-sipping sage in the corner (sprite + quotes are filled in by home.js) -->
-    <div id="sage" class="sage" aria-hidden="true">
-        <div id="sage-quote" class="sage-quote"></div>
-        <div id="sage-body" class="sage-body"></div>
+    <div id="sage" class="sage" data-depth="46" aria-hidden="true">
+        <div class="sage-scale">
+            <div id="sage-quote" class="sage-quote"></div>
+            <div id="sage-body" class="sage-body"></div>
+        </div>
     </div>
+
+    <!-- win effects: slash flipbook + wind particles, and the white flash -->
+    <div id="fx" class="fx" aria-hidden="true"></div>
+    <div id="flash" class="screen-flash" aria-hidden="true"></div>
 
     <script src="src/js/home.js" defer></script>
 </body>

@@ -139,11 +139,10 @@
   .page {
     position: relative; z-index: 10; margin: 0 auto; width: 100%; max-width: 27rem;
     min-height: 100vh; display: flex; flex-direction: column;
-    padding: .8rem .9rem 8.5rem;
+    padding: 2.6rem .9rem 8.5rem;
   }
-  #app.hit { animation: hit .16s steps(4); }
 
-  .top { display: flex; align-items: flex-end; justify-content: space-between; gap: .5rem; margin-bottom: .6rem; }
+  .top { display: flex; align-items: flex-end; justify-content: space-between; gap: .5rem; margin-bottom: 1.6rem; }
   .logo { font-size: 2.3rem; line-height: .9; letter-spacing: .2em; color: #f4efe9; text-shadow: 2px 2px 0 #000, 4px 4px 0 var(--color-sakura-deep); }
   .chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .3rem; }
   .chip {
@@ -210,7 +209,7 @@
   .slot-clue { font-size: 1.05rem; line-height: 1; padding-bottom: 1px; }
   .slot[data-state="yellow"] { border-color: var(--color-near); box-shadow: inset 0 0 0 1px rgb(201 162 60 / .55), var(--sh); }
   .slot[data-state="green"]  { border-color: var(--color-ok);   box-shadow: inset 0 0 0 1px rgb(79 179 106 / .6), var(--sh); }
-  .slot.flash { animation: slot-flash .14s steps(2); }
+  .slot.pulse { animation: slot-pulse .14s steps(2); }
 
   .hint { height: 1.2rem; margin-top: .25rem; line-height: 1.2rem; text-align: center; font-size: 1rem; letter-spacing: .04em; color: var(--color-gold); text-shadow: 1px 1px 0 #000; opacity: 0; transition: opacity .9s ease; }
   .hint.show { opacity: 1; }
@@ -228,23 +227,38 @@
   }
   .row.is-active { border-color: rgb(255 255 255 / .28); }
   .row.done { background: rgb(0 0 0 / .55); }
-  .row.flash { animation: row-flash .13s steps(2); }
   .row.shake { animation: shake .3s steps(6); }
   .row .idx { flex: none; width: .8rem; text-align: center; font-size: .85rem; color: var(--color-muted); }
   .row .word { flex: 1; min-width: 0; display: flex; justify-content: center; align-items: center; font-size: 1.35rem; line-height: 1; letter-spacing: .1em; text-transform: uppercase; }
   .row .ph { color: rgb(236 233 228 / .16); font-size: 1rem; letter-spacing: .3em; }
 
-  .ltr { display: inline-block; padding: 0 1px; }
+  .ltr { display: inline-block; padding: 0 1px; transition: translate .16s steps(3), filter .16s steps(3); }
   .ltr[data-state="miss"]   { color: #8b9490; }
   .ltr[data-state="yellow"] { color: #1a1408; background: #c99f2e; box-shadow: inset 1px 1px 0 rgb(255 255 255 / .35), inset -1px -1px 0 rgb(0 0 0 / .35); }
   .ltr[data-state="green"]  { color: #04120a; background: #38a85a; box-shadow: inset 1px 1px 0 rgb(255 255 255 / .35), inset -1px -1px 0 rgb(0 0 0 / .35); }
-  .ltr.cut-after { margin-right: 9px; position: relative; }
-  .ltr.cut-after::after { content: ""; position: absolute; right: -6px; top: 6%; height: 88%; width: 2px; background: rgb(255 255 255 / .55); transform: skewX(-20deg); }
-  .ltr.shove-l { animation: shove-l .12s steps(2); }
-  .ltr.shove-r { animation: shove-r .12s steps(2); }
+  /* a lit letter hops up and brightens for a beat as the cut ripples past (home.js adds / removes .pop) */
+  .ltr.pop { translate: 0 -2px; filter: brightness(1.9); }
 
-  /* the white flipbook slash (canvas) */
-  .slash { position: absolute; top: 50%; width: 128px; height: 128px; margin: -64px 0 0 -64px; image-rendering: pixelated; z-index: 6; pointer-events: none; }
+  /* ---------- The cut ----------
+     The blade is the letter's own ::after, so it always sits exactly in the gap.
+     .open plays once, when the guess is sliced: the blade draws top to bottom, the word
+     springs open along the cut, and a little burst of sparks leaves the seam.
+     Without .open (restored rounds, reduced motion) the cut is simply drawn at rest. */
+  .ltr.cut-after { margin-right: 9px; position: relative; }
+  .ltr.cut-after::after {
+    content: ""; position: absolute; right: -6px; top: 6%; height: 88%; width: 2px;
+    background: rgb(255 255 255 / .55); transform: skewX(-20deg); pointer-events: none;
+  }
+  .ltr.cut-after.open { animation: gap-open .32s cubic-bezier(.2, .8, .3, 1) var(--cd, 0s) both; }
+  .ltr.cut-after.open::after { animation: blade .36s linear var(--cd, 0s) both; }
+  .ltr.cut-after.open::before {
+    content: ""; position: absolute; right: -5px; top: 50%; width: 2px; height: 2px; margin-top: -1px;
+    background: #fff; pointer-events: none;
+    box-shadow:
+      -7px -9px 0 #fff, 8px -10px 0 #fff, -12px 1px 0 rgb(255 255 255 / .8), 12px -1px 0 rgb(255 255 255 / .8),
+      -8px 10px 0 #fff, 7px 9px 0 #fff, 0 -13px 0 rgb(255 255 255 / .7), 1px 13px 0 rgb(255 255 255 / .7);
+    animation: sparks .3s steps(5) var(--cd, 0s) both;
+  }
 
   /* ---------- Results ---------- */
   .kicker { text-align: center; font-size: .95rem; letter-spacing: .15em; color: var(--color-muted); text-shadow: 1px 1px 0 #000; }
@@ -283,12 +297,50 @@
   /* ===================================================== */
   /*  The sage                                               */
   /* ===================================================== */
-  .sage { position: fixed; left: 10px; bottom: 6px; z-index: 20; width: 96px; height: 108px; pointer-events: none; }
+  .sage { position: fixed; left: 30px; bottom: 16px; z-index: 20; width: 96px; height: 108px; pointer-events: none; }
+  .sage-scale { position: absolute; inset: 0; transform-origin: left bottom; }
   .sage-body { position: absolute; inset: 0; }
   .sage-frame { position: absolute; inset: 0; }
   .sage-frame svg { position: absolute; left: 0; bottom: 0; image-rendering: pixelated; }
   .sage-frame.f-idle { animation: sage-idle 8s steps(1) infinite; }
   .sage-frame.f-sip  { animation: sage-sip 8s steps(1) infinite; }
+  .sage-frame.f-s { visibility: hidden; }
+  .sage.striking .f-idle, .sage.striking .f-sip { visibility: hidden; animation: none; }
+  .sage[data-s="0"] .f-s0, .sage[data-s="1"] .f-s1, .sage[data-s="2"] .f-s2,
+  .sage[data-s="3"] .f-s3, .sage[data-s="4"] .f-s4, .sage[data-s="5"] .f-s5 { visibility: visible; }
+
+  /* ---------- Glowing lanterns ---------- */
+  .glow {
+    position: absolute; width: var(--gs, 120px); height: var(--gs, 120px);
+    margin: calc(var(--gs, 120px) / -2) 0 0 calc(var(--gs, 120px) / -2);
+    background: radial-gradient(circle, rgb(255 226 150 / .55) 0 18%, rgb(255 190 100 / .3) 18% 40%, rgb(255 150 70 / .14) 40% 62%, transparent 62%);
+    mix-blend-mode: screen; pointer-events: none;
+    animation: flick 2.8s steps(1) infinite; animation-delay: var(--d, 0s);
+  }
+  .string { position: absolute; width: 2px; background: #1b1620; }
+  .ripple {
+    position: absolute; width: 8px; height: 3px; border: 2px solid rgb(255 255 255 / .5);
+    transform: translate(-50%, 50%); animation: ripple 3.6s steps(6) infinite; animation-delay: var(--d, 0s);
+  }
+  .ground {
+    position: absolute; right: 0; background-repeat: repeat-x; background-position: left top;
+    background-size: 128px 64px; background-color: #4a3a28; box-shadow: inset 4px 0 0 #33281a;
+  }
+
+  /* ---------- Win effects ---------- */
+  .fx { position: fixed; inset: 0; z-index: 40; pointer-events: none; overflow: hidden; }
+  .mega { position: absolute; left: 0; bottom: 0; width: 100%; image-rendering: pixelated; }
+  .blow { position: absolute; left: -30px; background: var(--c); animation: blow var(--dur) steps(14) forwards; animation-delay: var(--dl); }
+  .windline { position: absolute; left: -140px; background: var(--c); animation: blow var(--dur) steps(10) forwards; animation-delay: var(--dl); }
+  /* the full-screen white flash (was .flash, which collided with the clue / row classes) */
+  .screen-flash { position: fixed; inset: 0; z-index: 50; background: #fff; opacity: 0; pointer-events: none; }
+  .screen-flash.on { animation: screen-flash .55s steps(6) forwards; }
+  html.quake .scenery, html.quake #app, html.quake .band, html.quake .sage { animation: quake .55s steps(1) 1; }
+  .scenery.gust .stalk { animation: gust 1.6s steps(12) 1 both; animation-delay: var(--gx, 0s); }
+  .scenery.gust .stalk-far  { --amp: .45; }
+  .scenery.gust .stalk-mid  { --amp: .8; }
+  .scenery.gust .stalk-near { --amp: 1.1; }
+  .scenery.gust #L-canopy { animation: canopy-gust 1.5s steps(10) 1; }
   .steam { position: absolute; width: 3px; height: 3px; background: #fff; opacity: 0; animation: steam 2.4s steps(6) infinite; animation-delay: var(--d); }
 
   .sage-quote { position: absolute; left: 4px; bottom: 100%; width: 15.5rem; height: 0; }
@@ -302,6 +354,13 @@
 /* ===================================================== */
 /*  Keyframes                                              */
 /* ===================================================== */
+@keyframes flick  { 0% { opacity: 1; } 22% { opacity: .78; } 47% { opacity: .95; } 68% { opacity: .84; } 86% { opacity: .7; } }
+@keyframes ripple { 0% { width: 8px; height: 3px; opacity: .9; } 100% { width: 44px; height: 12px; opacity: 0; } }
+@keyframes blow   { 0% { transform: translate(0, 0); opacity: 1; } 100% { transform: translate(calc(100vw + 200px), var(--dy, 0px)); opacity: .9; } }
+@keyframes screen-flash { 0% { opacity: .95; } 30% { opacity: .7; } 100% { opacity: 0; } }
+@keyframes quake  { 0% { translate: 14px -8px; } 12% { translate: -12px 9px; } 25% { translate: 10px -6px; } 38% { translate: -8px 5px; } 52% { translate: 5px -3px; } 70% { translate: -3px 2px; } 100% { translate: 0 0; } }
+@keyframes gust   { 0% { rotate: 0deg; } 22% { rotate: calc(var(--amp, 1) * 5deg); } 42% { rotate: calc(var(--amp, 1) * -1.5deg); } 62% { rotate: calc(var(--amp, 1) * 3deg); } 82% { rotate: calc(var(--amp, 1) * -.8deg); } 100% { rotate: 0deg; } }
+@keyframes canopy-gust { 0%, 100% { translate: 0 0; } 30% { translate: 18px 0; } 60% { translate: -6px 0; } }
 @keyframes sway  { from { transform: rotate(-1.1deg); } to { transform: rotate(1.1deg); } }
 @keyframes shaft { from { opacity: .45; } to { opacity: 1; } }
 @keyframes flow  { to { background-position: calc(var(--tw) * -1) 0; } }
@@ -318,12 +377,20 @@
   85%  { opacity: .9; }
   100% { transform: translate(var(--dx), var(--dy)); opacity: 0; }
 }
-@keyframes hit       { 0%, 100% { transform: translate(0, 0); } 25% { transform: translate(-3px, 1px); } 50% { transform: translate(3px, -1px); } 75% { transform: translate(-2px, 0); } }
 @keyframes shake     { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
-@keyframes row-flash { 0% { box-shadow: inset 0 0 0 2px #fff, var(--sh); background: rgb(255 255 255 / .22); } 100% { box-shadow: var(--sh); } }
-@keyframes slot-flash{ 0% { background: rgb(255 255 255 / .25); } 100% { background: #0a0e0c; } }
-@keyframes shove-l   { 0% { transform: translateX(0); } 50% { transform: translateX(-4px); } 100% { transform: translateX(0); } }
-@keyframes shove-r   { 0% { transform: translateX(0); } 50% { transform: translateX(4px); } 100% { transform: translateX(0); } }
+@keyframes slot-pulse{ 0% { background: rgb(255 255 255 / .25); } 100% { background: #0a0e0c; } }
+
+/* the cut: blade draws down the seam (stepped), holds bright, then settles into the resting seam line */
+@keyframes blade {
+  0%   { top: -22%; height: 144%; width: 3px; background: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / .45); clip-path: inset(-3px -3px 100% -3px); animation-timing-function: steps(4); }
+  22%  { top: -22%; height: 144%; width: 3px; background: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / .45); clip-path: inset(-3px); animation-timing-function: linear; }
+  40%  { top: -22%; height: 144%; width: 3px; background: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / .45); clip-path: inset(-3px); animation-timing-function: ease-out; }
+  100% { top: 6%; height: 88%; width: 2px; background: rgb(255 255 255 / .55); box-shadow: 0 0 0 0 rgb(255 255 255 / 0); clip-path: inset(-3px); }
+}
+/* the word opens along the cut with a small overshoot, then settles */
+@keyframes gap-open { 0% { margin-right: 0; } 50% { margin-right: 14px; } 100% { margin-right: 9px; } }
+@keyframes sparks   { 0% { transform: scale(.2); opacity: 0; } 12% { transform: scale(.45); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+
 @keyframes sage-idle { 0% { opacity: 1; } 84% { opacity: 0; } 94% { opacity: 1; } }
 @keyframes sage-sip  { 0% { opacity: 0; } 84% { opacity: 1; } 94% { opacity: 0; } }
 @keyframes steam     { 0% { transform: translate(0, 0); opacity: 0; } 25% { opacity: .9; } 100% { transform: translate(var(--sx, 3px), -16px); opacity: 0; } }
@@ -335,13 +402,15 @@
 }
 
 @media (max-width: 640px) {
-  .sage { transform: scale(.78); transform-origin: left bottom; }
+  .sage-scale { transform: scale(.78); }
   .page { padding-bottom: 7rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .stalk-mid, .stalk-near, .shaft, .flow, .fall::before, .fall-mist, .petal, .mote, .steam,
-  .sage-frame, #app.hit, .row.flash, .row.shake, .slot.flash, .ltr.shove-l, .ltr.shove-r { animation: none !important; }
+  .sage-frame, .glow, .ripple, .row.shake, .slot.pulse,
+  .ltr.cut-after.open, .ltr.cut-after.open::before, .ltr.cut-after.open::after { animation: none !important; }
+  .ltr { transition: none; }
   .sage-frame.f-sip { opacity: 0; }
   .mote { opacity: .6; }
   .hint, .slot-top { transition: none; }
