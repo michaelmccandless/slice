@@ -73,10 +73,35 @@ const todayNum = () => Math.max(1, dayNumber() - FIRST_DAY + 1);
 const fmtDate = (n) =>
   new Date((FIRST_DAY + n - 1) * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).toUpperCase();
 
-// Day N is the Nth entry of games.json, so new words go at the END of the file.
-function wordFor(n) {
+/* Which word is day N?
+   Days 1..DAILY_LOCKED were already served straight from the file order, so they never move.
+   After that, every THREE_EVERY-th day is a 3-part word (the 3-part words are shuffled once,
+   deterministically, so families like -some / -ion don't clump); the other days walk through
+   the 2-part words in file order. Add new words at the END of games.json. */
+const DAILY_LOCKED = 4;
+const THREE_EVERY = 3;
+let poolCache = null;
+
+function dailyPools() {
   const keys = Object.keys(data.games);
-  return keys[(n - 1) % keys.length];
+  if (poolCache && poolCache.size === keys.length) return poolCache;
+  const two = keys.filter((k) => data.games[k].parts.length < 3);
+  const three = keys.filter((k) => data.games[k].parts.length >= 3);
+  const r = rng(20261123);
+  for (let i = three.length - 1; i > 0; i--) {
+    const j = Math.floor(r() * (i + 1));
+    [three[i], three[j]] = [three[j], three[i]];
+  }
+  poolCache = { size: keys.length, two, three };
+  return poolCache;
+}
+
+function wordFor(n) {
+  const { two, three } = dailyPools();
+  if (!three.length || n <= DAILY_LOCKED) return two[(n - 1) % two.length];
+  const i = n - DAILY_LOCKED - 1;
+  if (i % THREE_EVERY === THREE_EVERY - 1) return three[Math.floor(i / THREE_EVERY) % three.length];
+  return two[(DAILY_LOCKED + i - Math.floor(i / THREE_EVERY)) % two.length];
 }
 
 const defaultStats = () => ({ played: 0, wins: 0, streak: 0, best: 0, lastWin: 0, dist: [0, 0, 0, 0] });
@@ -388,7 +413,7 @@ function buildSlots() {
     top.textContent = `${part.length} LETTERS`;
     const clue = document.createElement('span');
     clue.className = 'slot-clue';
-    clue.textContent = state.clues[i];
+    clue.textContent = state.clues[i].toLowerCase();
     slot.append(top, clue);
     els.slots.appendChild(slot);
   });
